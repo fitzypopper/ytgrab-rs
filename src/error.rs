@@ -30,6 +30,9 @@ pub enum Error {
     #[error("database error: {0}")]
     Db(#[from] rusqlite::Error),
 
+    #[error("javascript error: {0}")]
+    Js(#[from] rquickjs::Error),
+
     /// googlevideo refused the request. Usually the range was too large or
     /// the URL was refused outright; a fresh player request may help.
     #[error("googlevideo rejected the request (HTTP {status}) for format {itag}")]

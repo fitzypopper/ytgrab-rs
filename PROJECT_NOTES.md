@@ -83,6 +83,35 @@ Not needed with the ANDROID client. If a future client returns
 computed by running the player JS — that needs a JS engine (`boa_engine` or
 `rquickjs`) and is the main reason to switch clients.
 
+## The `n` challenge and the embedded JS engine
+
+Some clients (the TV app) hand out URLs whose `n` parameter is a challenge.
+The answer is computed by a function inside YouTube's `base.js`.
+
+yt-dlp solves this by running the player JavaScript in deno/node/bun, which
+means the user has to install one. ytgrab embeds QuickJS (`rquickjs`) instead
+and vendors the solver from yt-dlp/ejs (Unlicense) in `vendor/ejs/`:
+
+* `lib.min.js` bundles meriyah (ISC) and astring (MIT) — a JS parser and
+  code generator.
+* `core.min.js` parses `base.js`, finds the function that fills in the `n`
+  and `sig` query parameters of a `URL` object, rewrites it into a
+  standalone function and evaluates it.
+
+It works statically on the player's source, so no browser environment is
+needed. Solving one challenge takes ~0.5 s.
+
+To get a TV client request to work at all, three things are needed, all
+discovered by comparing requests with yt-dlp's:
+
+1. the **watch page** for the visitor id (`X-Goog-Visitor-Id` header) and the
+   signature timestamp (`STS`),
+2. **no API key** in the query string,
+3. `playbackContext.contentPlaybackContext.signatureTimestamp` in the body
+   and `timeZone`/`utcOffsetMinutes` in the client context.
+
+Without the visitor id the TV client answers `LOGIN_REQUIRED`.
+
 ## The throttling discovery (important)
 
 Measured on the same 720p video (26 MB), same machine, same minute:

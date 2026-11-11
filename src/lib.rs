@@ -7,6 +7,7 @@ pub mod download;
 pub mod error;
 pub mod formats;
 pub mod innertube;
+pub mod js;
 pub mod mux;
 pub mod output;
 pub mod runner;

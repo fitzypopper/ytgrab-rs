@@ -14,7 +14,8 @@ ytgrab "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
 ## Why it's fast
 
-* No Chromium. The binary is ~10 MB and starts instantly.
+* No Chromium and no external JavaScript runtime. The binary is ~11 MB and
+  starts instantly.
 * The **ANDROID** InnerTube client returns *unciphered* `googlevideo.com`
   URLs, so there is no signature deciphering and no PO token to obtain.
   (The WEB client requires both, which is why browser-based downloaders
@@ -94,6 +95,27 @@ ytgrab --fragments 8 URL
 
 Audio codec follows the video container: H.264 gets AAC (`.mp4`), VP9 gets
 Opus (`.webm`). `--prefer-opus` forces Opus everywhere.
+
+## How it gets the video URLs
+
+YouTube serves different clients differently. ytgrab tries the **Android**
+client first because it needs no JavaScript and no PO token — but it only
+serves some formats.
+
+When googlevideo refuses a format (a 403 that means "range too large", not
+"expired"), ytgrab switches to the **TV** client. That client's URLs carry a
+throttling challenge (`n=`) which is a puzzle solved by a function inside
+YouTube's player JavaScript. ytgrab downloads `base.js` and runs it in an
+embedded [QuickJS](https://bellard.org/quickjs/) engine — the same solver
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) uses, vendored from
+[yt-dlp/ejs](https://github.com/yt-dlp/ejs) (Unlicense) — so `deno`, `node`
+and `bun` do **not** need to be installed.
+
+```
+$ ytgrab -f 137 "https://youtu.be/JBoUwElRFVM"
+googlevideo refused format 137 (HTTP 403); retrying through the TV client
+Saved tv137.mp4                                  # 944 MB, 1080p
+```
 
 ## Cookies
 

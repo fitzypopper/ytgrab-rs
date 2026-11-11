@@ -30,6 +30,12 @@ pub struct ClientContext {
     pub numeric_id: u32,
     /// Extra fields merged into the `client` object of the request context.
     pub extra: Value,
+    /// Visitor id, sent as the `X-Goog-Visitor-Id` header.
+    pub visitor_data: Option<String>,
+    /// The TV client does not want the API key in the query string.
+    pub use_api_key: bool,
+    /// The player signature timestamp (`STS`).
+    pub signature_timestamp: Option<i64>,
 }
 
 impl ClientContext {
@@ -42,6 +48,9 @@ impl ClientContext {
             user_agent: "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip",
             api_key: "AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w",
             numeric_id: CLIENT_ID_ANDROID,
+            visitor_data: None,
+            use_api_key: true,
+            signature_timestamp: None,
             extra: json!({
                 "androidSdkVersion": 34,
                 "osName": "Android",
@@ -57,6 +66,9 @@ impl ClientContext {
             user_agent: "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
             api_key: "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc",
             numeric_id: CLIENT_ID_IOS,
+            visitor_data: None,
+            use_api_key: true,
+            signature_timestamp: None,
             extra: json!({
                 "deviceMake": "Apple",
                 "deviceModel": "iPhone16,2",
@@ -73,6 +85,9 @@ impl ClientContext {
             user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
             api_key: "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
             numeric_id: CLIENT_ID_MWEB,
+            visitor_data: None,
+            use_api_key: true,
+            signature_timestamp: None,
             extra: json!({}),
         }
     }
@@ -84,7 +99,32 @@ impl ClientContext {
             user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
             api_key: "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8",
             numeric_id: CLIENT_ID_WEB,
+            visitor_data: None,
+            use_api_key: true,
+            signature_timestamp: None,
             extra: json!({}),
+        }
+    }
+
+    /// The Samsung TV app. Its URLs carry a throttling challenge that has to
+    /// be solved with the player's JavaScript, but in exchange it serves the
+    /// high quality formats that the Android client refuses.
+    pub fn tv_samsung() -> Self {
+        Self {
+            name: "TVHTML5",
+            version: "5.20260707",
+            user_agent: "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1",
+            api_key: "",
+            numeric_id: CLIENT_ID_TV,
+            extra: json!({
+                "deviceMake": "Samsung",
+                "deviceModel": "UKS9800",
+                "osName": "Tizen",
+                "osVersion": "2.4.0",
+            }),
+            visitor_data: None,
+            use_api_key: false,
+            signature_timestamp: None,
         }
     }
 
@@ -95,6 +135,9 @@ impl ClientContext {
             user_agent: "Mozilla/5.0 (PlayStation; PlayStation 4/12.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Safari/605.1.15",
             api_key: "AIzaSyDCU8hByM-4DrUqRUYnGn-3llEO78bcxq8",
             numeric_id: CLIENT_ID_TV,
+            visitor_data: None,
+            use_api_key: true,
+            signature_timestamp: None,
             extra: json!({}),
         }
     }
@@ -116,6 +159,8 @@ impl ClientContext {
             "clientVersion": self.version,
             "hl": "en",
             "gl": "US",
+            "timeZone": "UTC",
+            "utcOffsetMinutes": 0,
         });
         if let (Some(dst), Some(src)) = (obj.as_object_mut(), self.extra.as_object()) {
             for (k, v) in src {
@@ -162,22 +207,30 @@ impl InnerTube {
 
     /// POST a request to an InnerTube endpoint, returning the raw JSON.
     pub async fn post(&self, endpoint: &str, body: Value) -> Result<Value> {
-        let url = format!(
-            "https://www.youtube.com/youtubei/v1/{}?key={}&prettyPrint=false",
-            endpoint, self.ctx.api_key
-        );
+        let url = if self.ctx.use_api_key && !self.ctx.api_key.is_empty() {
+            format!(
+                "https://www.youtube.com/youtubei/v1/{}?key={}&prettyPrint=false",
+                endpoint, self.ctx.api_key
+            )
+        } else {
+            format!("https://www.youtube.com/youtubei/v1/{endpoint}?prettyPrint=false")
+        };
         if std::env::var("YTDBG").is_ok() {
             eprintln!("DEBUG url={url}");
             eprintln!("DEBUG body={body}");
         }
-        let resp = self
+        let mut req = self
             .http
             .post(&url)
             .header("Content-Type", "application/json")
             .header("Origin", "https://www.youtube.com")
             .header("X-Youtube-Client-Name", self.ctx.numeric_id.to_string())
             .header("X-Youtube-Client-Version", self.ctx.version)
-            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Accept-Language", "en-US,en;q=0.9");
+        if let Some(visitor) = &self.ctx.visitor_data {
+            req = req.header("X-Goog-Visitor-Id", visitor);
+        }
+        let resp = req
             .json(&body)
             .send()
             .await?;

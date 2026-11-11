@@ -19,6 +19,64 @@ use crate::output::{self, TemplateVars};
 use crate::subtitles;
 use crate::url::{self, Target};
 
+/// The TV client, used when the Android client's formats are refused.
+///
+/// Its URLs carry a throttling challenge, so the player script has to be
+/// downloaded and run through the embedded JavaScript engine.
+struct TvSource {
+    jar: Option<std::sync::Arc<reqwest::cookie::Jar>>,
+    watch: Option<crate::innertube::web::WatchPage>,
+    player_js: Option<String>,
+}
+
+impl TvSource {
+    fn new(jar: Option<std::sync::Arc<reqwest::cookie::Jar>>) -> Self {
+        Self {
+            jar,
+            watch: None,
+            player_js: None,
+        }
+    }
+
+    /// The formats the TV client offers, with their challenges solved.
+    async fn formats(&mut self, video_id: &str) -> Result<(PlayerResponse, Vec<Format>)> {
+        let http = reqwest::Client::builder()
+            .user_agent(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+            )
+            .build()?;
+
+        if self.watch.is_none() {
+            self.watch = Some(crate::innertube::web::fetch(&http, video_id).await?);
+        }
+        let watch = self.watch.as_ref().expect("just fetched");
+
+        let mut ctx = ClientContext::tv_samsung();
+        ctx.visitor_data = Some(watch.visitor_data.clone());
+        ctx.signature_timestamp = Some(watch.signature_timestamp);
+        let it = InnerTube::with_cookie_jar(ctx, self.jar.clone())?;
+
+        let player = player::fetch_tv(&it, video_id).await?;
+        let mut formats =
+            player::all_formats(player.streaming_data.as_ref().expect("streaming data"));
+
+        // Solve the throttling challenges with the player's JavaScript.
+        if self.player_js.is_none() {
+            self.player_js = Some(crate::innertube::web::fetch_player_js(&http, &watch.player_js_url).await?);
+        }
+        let player_js = self.player_js.clone().expect("just fetched");
+        let solved = tokio::task::spawn_blocking(move || {
+            let mut formats = formats;
+            player::solve_n_challenges(&mut formats, &player_js)?;
+            Ok::<Vec<Format>, Error>(formats)
+        })
+        .await
+        .map_err(|e| Error::other(format!("the solver thread died: {e}")))??;
+
+        Ok((player, solved))
+    }
+}
+
 /// Context shared across every video in a playlist download.
 #[derive(Debug, Clone, Default)]
 struct PlaylistContext {
@@ -54,8 +112,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     };
 
     let it = InnerTube::with_cookie_jar(ctx, jar.clone())?;
+    let tv = TvSource::new(jar.clone());
 
-    let mut dl = Downloader::with_cookie_jar(it.user_agent(), jar)?;
+    let mut dl = Downloader::with_cookie_jar(it.user_agent(), jar.clone())?;
     dl.retries = cli.retries;
     dl.fragments = cli.fragments.max(1);
 
@@ -63,7 +122,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Target::Video { id, playlist } => {
             let want_playlist = cli.playlist && !cli.no_playlist;
             match (want_playlist, playlist) {
-                (true, Some(list)) => download_playlist(&it, &dl, &cli, &list).await,
+                (true, Some(list)) => download_playlist(&it, &dl, &cli, &list, jar.clone()).await,
                 _ => {
                     download_video(
                         &it,
@@ -71,12 +130,13 @@ pub async fn run(cli: Cli) -> Result<()> {
                         &cli,
                         &id,
                         &PlaylistContext::default(),
+                        &mut TvSource::new(jar.clone()),
                     )
                     .await
                 }
             }
         }
-        Target::Playlist { id } => download_playlist(&it, &dl, &cli, &id).await,
+        Target::Playlist { id } => download_playlist(&it, &dl, &cli, &id, jar.clone()).await,
     }
 }
 
@@ -85,6 +145,7 @@ async fn download_playlist(
     dl: &Downloader,
     cli: &Cli,
     playlist_id: &str,
+    jar: Option<std::sync::Arc<reqwest::cookie::Jar>>,
 ) -> Result<()> {
     if !cli.quiet {
         eprintln!("Fetching playlist {playlist_id} ...");
@@ -104,10 +165,11 @@ async fn download_playlist(
     };
 
     let mut failures = 0;
+    let mut tv = TvSource::new(jar);
     for (i, item) in items.iter().enumerate() {
         let mut item_ctx = ctx.clone();
         item_ctx.index = Some(i as u64 + 1);
-        if let Err(e) = download_video(it, dl, cli, &item.video_id, &item_ctx).await {
+        if let Err(e) = download_video(it, dl, cli, &item.video_id, &item_ctx, &mut tv).await {
             failures += 1;
             eprintln!("error: {} failed: {e}", item.video_id);
         }
@@ -128,19 +190,29 @@ async fn download_video(
     cli: &Cli,
     video_id: &str,
     pctx: &PlaylistContext,
+    tv: &mut TvSource,
 ) -> Result<()> {
     // googlevideo serves some formats only in small windows and refuses
     // larger range requests with a 403. When that happens, mint a fresh URL
     // and fall back to the next best format.
     let mut failed_formats: Vec<i64> = Vec::new();
+    // The Android client is tried first because it needs no JavaScript. If
+    // googlevideo refuses its formats, the TV client is used instead: its
+    // URLs work, but their throttling challenge has to be solved first.
+    let mut use_tv = false;
 
     loop {
-        let player = player::fetch(it, video_id).await?;
-        let streaming = player
-            .streaming_data
-            .as_ref()
-            .ok_or_else(|| Error::Unavailable("no streaming data".into()))?;
-        let formats = player::all_formats(streaming);
+        let (player, formats) = if use_tv {
+            tv.formats(video_id).await?
+        } else {
+            let player = player::fetch(it, video_id).await?;
+            let streaming = player
+                .streaming_data
+                .as_ref()
+                .ok_or_else(|| Error::Unavailable("no streaming data".into()))?;
+            let formats = player::all_formats(streaming);
+            (player, formats)
+        };
 
         if cli.list_formats {
             print_formats(&formats);
@@ -183,6 +255,14 @@ async fn download_video(
         match download_streams(dl, cli, &player, &details, &selection, pctx, video_id).await {
             Ok(()) => return Ok(()),
             Err(Error::SignedUrl { status, itag }) => {
+                if !use_tv {
+                    use_tv = true;
+                    eprintln!(
+                        "googlevideo refused format {itag} (HTTP {status}); \
+                         retrying through the TV client"
+                    );
+                    continue;
+                }
                 failed_formats.push(itag);
                 if failed_formats.len() > MAX_FORMAT_FALLBACKS {
                     return Err(Error::other(format!(

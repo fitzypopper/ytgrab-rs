@@ -4,7 +4,7 @@
 **Component:** `ytgrab` (src/download.rs)
 **Version:** local build from `~/Projects/ytgrab-rs`
 **Severity:** high — blocks the most common use case (downloading 1080p)
-**Status:** fixed (with a documented limitation, see *Remaining limitation*)
+**Status:** fixed — the high quality format is now downloaded (see *The fix*)
 
 ---
 
@@ -116,19 +116,41 @@ user down the wrong path (re-running the same command, which fails identically).
 
 ---
 
-## Remaining limitation
+## The fix, part two: solving the `n` challenge
 
-For videos where **every** video-only format is served through a restricted window (this one, for example),
-ytgrab can only deliver the progressive format, because that is the only URL with `ratebypass=yes`. The
-fallback chain finds it automatically, so the download succeeds — but at 360p instead of 1080p.
+Falling back to the progressive format works, but it means 360p instead of 1080p. The real answer is to
+use a client whose URLs are not restricted.
 
-Getting the high quality variants for those videos needs either:
+The **TVHTML5** client serves the high quality formats, but its URLs carry a throttling challenge:
 
-* a PO token (a browser or a token provider) so the TVHTML5 client can be used, or
-* computing the `n` parameter, which means running YouTube's player JavaScript.
+```
+n=lIJCGe0SUkJKYksZFr      <- a puzzle, not a value
+```
 
-Both contradict the "no browser, no JS engine" design, so this is a conscious trade-off rather than an
-oversight. yt-dlp handles these videos because it does both.
+The answer is computed by a function inside YouTube's player JavaScript. yt-dlp solves it by running that
+JavaScript in deno/node/bun — which means the user has to install a runtime.
+
+ytgrab embeds [QuickJS](https://bellard.org/quickjs/) (`rquickjs`) instead and vendors the solver from
+[yt-dlp/ejs](https://github.com/yt-dlp/ejs) (Unlicense) in `vendor/ejs/`. The solver works statically on
+the player's source — it parses `base.js` with meriyah, finds the function that fills in the `n` and `sig`
+query parameters of a `URL` object, rewrites it into a standalone function and evaluates it. No browser
+environment is involved, so nothing needs to be installed.
+
+```
+$ ytgrab -f 137 "https://youtu.be/JBoUwElRFVM"
+googlevideo refused format 137 (HTTP 403); retrying through the TV client
+Saved tv137.mp4                        # 944 MB, 1080p
+```
+
+To make the TV client answer at all, three details were needed, all found by comparing our requests with
+yt-dlp's:
+
+1. the **watch page**, for the visitor id (`X-Goog-Visitor-Id` header) and the signature timestamp (`STS`),
+2. **no API key** in the query string,
+3. `playbackContext.contentPlaybackContext.signatureTimestamp` in the body, and `timeZone` /
+   `utcOffsetMinutes` in the client context.
+
+Without the visitor id the TV client answers `LOGIN_REQUIRED`.
 
 ---
 

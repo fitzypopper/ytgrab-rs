@@ -34,6 +34,9 @@ pub fn solve_challenges(player_js: &str, challenges: &[String]) -> Result<Vec<St
     }
 
     let runtime = Runtime::new()?;
+    // Meriyah is a recursive descent parser and the player script is a
+    // couple of megabytes, which is deeper than QuickJS's default stack.
+    runtime.set_max_stack_size(64 * 1024 * 1024);
     let context = Context::full(&runtime)?;
 
     // The library script defines `lib`; the core script uses the `meriyah`
@@ -60,11 +63,23 @@ pub fn solve_challenges(player_js: &str, challenges: &[String]) -> Result<Vec<St
             .get("jsc")
             .map_err(|e| Error::other(format!("no solver in the JS runtime: {e}")))?;
 
+        // The solver takes an object, not a JSON string.
         let json = serde_json::to_string(&payload)
             .map_err(|e| Error::other(format!("could not encode the solver input: {e}")))?;
-        let out: String = jsc
-            .call((json,))
+        let input = ctx
+            .json_parse(json)
+            .map_err(|e| Error::other(format!("could not build the solver input: {e}")))?;
+
+        let result = jsc
+            .call::<(rquickjs::Value,), rquickjs::Value>((input,))
             .map_err(|e| Error::other(format!("the solver failed: {e}")))?;
+
+        // The solver answers with an object.
+        let out = ctx
+            .json_stringify(result)
+            .map_err(|e| Error::other(format!("could not read the solver output: {e}")))?
+            .ok_or_else(|| Error::other("the solver returned nothing"))?
+            .to_string()?;
 
         Ok::<String, Error>(out)
     })?;
@@ -140,5 +155,26 @@ mod tests {
     fn reports_solver_errors() {
         let raw = r#"{"type":"result","responses":[{"type":"error","error":"boom"}]}"#;
         assert!(parse_solver_output(raw, &["abc".to_string()]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod quickjs_tests {
+    use super::*;
+
+    /// The solver must work inside QuickJS, not just in node: meriyah is a
+    /// recursive descent parser and the player script is huge.
+    #[test]
+    #[ignore = "needs a player script; set YTGAB_TEST_PLAYER to a base.js path"]
+    fn solves_a_real_challenge() {
+        let Ok(path) = std::env::var("YTGAB_TEST_PLAYER") else {
+            eprintln!("set YTGAB_TEST_PLAYER to a base.js path to run this test");
+            return;
+        };
+        let player = std::fs::read_to_string(path).unwrap();
+        let challenge = "lIJCGe0SUkJKYksZFr";
+        let solved = solve_challenges(&player, &[challenge.to_string()]).unwrap();
+        assert!(!solved[0].is_empty());
+        assert_ne!(solved[0], challenge, "the challenge should have been solved");
     }
 }

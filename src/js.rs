@@ -29,10 +29,61 @@ const CORE_JS: &str = include_str!("../vendor/ejs/core.min.js");
 /// This blocks for a few hundred milliseconds (parsing the player script
 /// dominates), so call it from a blocking thread.
 pub fn solve_challenges(player_js: &str, challenges: &[String]) -> Result<Vec<String>> {
+    let (preprocessed, _) = preprocess_player(player_js)?;
+    solve_preprocessed(&preprocessed, challenges)
+}
+
+/// Turn the player script into the small piece of JavaScript that actually
+/// computes the challenge, so it can be reused for several videos.
+///
+/// Parsing the player script is the expensive part (a couple of megabytes of
+/// JavaScript through a recursive descent parser), and it does not change
+/// between videos of the same session.
+pub fn preprocess_player(player_js: &str) -> Result<(String, String)> {
+    let context = new_context()?;
+
+    let payload = serde_json::json!({
+        "type": "player",
+        "player": player_js,
+        "requests": [],
+        "output_preprocessed": true,
+    });
+
+    let raw = call_solver(&context, &payload)?;
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| Error::other(format!("bad solver output: {e}")))?;
+    let preprocessed = doc
+        .get("preprocessed_player")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Error::other("the solver did not return a preprocessed player"))?
+        .to_string();
+
+    Ok((preprocessed, raw))
+}
+
+/// Solve challenges with an already preprocessed player.
+pub fn solve_preprocessed(preprocessed: &str, challenges: &[String]) -> Result<Vec<String>> {
     if challenges.is_empty() {
         return Ok(Vec::new());
     }
+    let context = new_context()?;
 
+    let payload = serde_json::json!({
+        "type": "preprocessed",
+        "preprocessed_player": preprocessed,
+        "requests": [{
+            "type": "n",
+            "challenges": challenges,
+        }],
+    });
+
+    let raw = call_solver(&context, &payload)?;
+    parse_solver_output(&raw, challenges)
+}
+
+/// A runtime with the solver scripts loaded.
+fn new_context() -> Result<Context> {
     let runtime = Runtime::new()?;
     // Meriyah is a recursive descent parser and the player script is a
     // couple of megabytes, which is deeper than QuickJS's default stack.
@@ -48,23 +99,19 @@ pub fn solve_challenges(player_js: &str, challenges: &[String]) -> Result<Vec<St
         Ok::<(), rquickjs::Error>(())
     })?;
 
-    let payload = serde_json::json!({
-        "type": "player",
-        "player": player_js,
-        "requests": [{
-            "type": "n",
-            "challenges": challenges,
-        }],
-    });
+    Ok(context)
+}
 
-    let raw = context.with(|ctx| {
+/// Hand a payload to the solver and return its JSON reply.
+fn call_solver(context: &Context, payload: &serde_json::Value) -> Result<String> {
+    context.with(|ctx| {
         let global = ctx.globals();
         let jsc: Function = global
             .get("jsc")
             .map_err(|e| Error::other(format!("no solver in the JS runtime: {e}")))?;
 
         // The solver takes an object, not a JSON string.
-        let json = serde_json::to_string(&payload)
+        let json = serde_json::to_string(payload)
             .map_err(|e| Error::other(format!("could not encode the solver input: {e}")))?;
         let input = ctx
             .json_parse(json)
@@ -82,9 +129,7 @@ pub fn solve_challenges(player_js: &str, challenges: &[String]) -> Result<Vec<St
             .to_string()?;
 
         Ok::<String, Error>(out)
-    })?;
-
-    parse_solver_output(&raw, challenges)
+    })
 }
 
 /// Pull the solved values out of the solver's JSON reply.

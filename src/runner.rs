@@ -27,6 +27,9 @@ struct TvSource {
     jar: Option<std::sync::Arc<reqwest::cookie::Jar>>,
     watch: Option<crate::innertube::web::WatchPage>,
     player_js: Option<String>,
+    /// The player script, reduced to the part that solves challenges. It is
+    /// the same for every video of a session, so it is only built once.
+    preprocessed: Option<String>,
 }
 
 impl TvSource {
@@ -35,6 +38,7 @@ impl TvSource {
             jar,
             watch: None,
             player_js: None,
+            preprocessed: None,
         }
     }
 
@@ -61,13 +65,24 @@ impl TvSource {
             player::all_formats(player.streaming_data.as_ref().expect("streaming data"));
 
         // Solve the throttling challenges with the player's JavaScript.
-        if self.player_js.is_none() {
-            self.player_js = Some(crate::innertube::web::fetch_player_js(&http, &watch.player_js_url).await?);
+        if self.preprocessed.is_none() {
+            if self.player_js.is_none() {
+                self.player_js = Some(
+                    crate::innertube::web::fetch_player_js(&http, &watch.player_js_url).await?,
+                );
+            }
+            let player_js = self.player_js.clone().expect("just fetched");
+            let preprocessed = tokio::task::spawn_blocking(move || {
+                crate::js::preprocess_player(&player_js).map(|(p, _)| p)
+            })
+            .await
+            .map_err(|e| Error::other(format!("the solver thread died: {e}")))??;
+            self.preprocessed = Some(preprocessed);
         }
-        let player_js = self.player_js.clone().expect("just fetched");
+        let preprocessed = self.preprocessed.clone().expect("just built");
         let solved = tokio::task::spawn_blocking(move || {
             let mut formats = formats;
-            player::solve_n_challenges(&mut formats, &player_js)?;
+            player::solve_n_challenges_preprocessed(&mut formats, &preprocessed)?;
             Ok::<Vec<Format>, Error>(formats)
         })
         .await

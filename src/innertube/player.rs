@@ -112,19 +112,31 @@ pub fn set_n_challenge(url: &str, solved: &str) -> String {
 /// This runs the player's JavaScript, which blocks for a moment, so it is
 /// done on a blocking thread.
 pub fn solve_n_challenges(formats: &mut [Format], player_js: &str) -> Result<()> {
-    let mut challenges = Vec::new();
-    for f in formats.iter() {
-        if let Some(url) = &f.url {
-            if let Some(n) = n_challenge(url) {
-                challenges.push(n);
-            }
-        }
-    }
-    if challenges.is_empty() {
-        return Ok(());
-    }
+    let solved = crate::js::solve_challenges(player_js, &challenges_of(formats))?;
+    apply_solutions(formats, solved);
+    Ok(())
+}
 
-    let solved = crate::js::solve_challenges(player_js, &challenges)?;
+/// Solve the challenges with an already preprocessed player script.
+pub fn solve_n_challenges_preprocessed(
+    formats: &mut [Format],
+    preprocessed: &str,
+) -> Result<()> {
+    let solved = crate::js::solve_preprocessed(preprocessed, &challenges_of(formats))?;
+    apply_solutions(formats, solved);
+    Ok(())
+}
+
+/// The challenges of a format list, in order.
+fn challenges_of(formats: &[Format]) -> Vec<String> {
+    formats
+        .iter()
+        .filter_map(|f| f.url.as_deref().and_then(n_challenge))
+        .collect()
+}
+
+/// Put the solved challenges back into the URLs.
+fn apply_solutions(formats: &mut [Format], solved: Vec<String>) {
     let mut iter = solved.into_iter();
     for f in formats.iter_mut() {
         if let Some(url) = &f.url {
@@ -135,7 +147,6 @@ pub fn solve_n_challenges(formats: &mut [Format], player_js: &str) -> Result<()>
             }
         }
     }
-    Ok(())
 }
 
 #[cfg(test)]

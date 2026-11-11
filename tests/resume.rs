@@ -80,8 +80,7 @@ async fn handle(
         })
         .and_then(|v| {
             v.strip_prefix("bytes=")
-                .map(|s| s.split('-').next().unwrap_or("0").trim().parse::<usize>().ok())
-                .flatten()
+                .and_then(|s| s.split('-').next().unwrap_or("0").trim().parse::<usize>().ok())
         });
 
     let Some(start) = range else {
@@ -106,7 +105,7 @@ async fn handle(
 
     // Every n-th connection dies after a short burst, starting with the
     // first one so the client has to reconnect.
-    let drop_after = if drop_every > 0 && request_number % drop_every == 0 {
+    let drop_after = if drop_every > 0 && request_number.is_multiple_of(drop_every) {
         64 * 1024
     } else {
         usize::MAX

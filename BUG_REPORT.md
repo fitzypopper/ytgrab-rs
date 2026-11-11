@@ -139,7 +139,7 @@ environment is involved, so nothing needs to be installed.
 ```
 $ ytgrab -f 137 "https://youtu.be/JBoUwElRFVM"
 googlevideo refused format 137 (HTTP 403); retrying through the TV client
-Saved tv137.mp4                        # 944 MB, 1080p
+Saved tv137.mp4                        # 944,298,744 bytes, 1920x1080, 3600.0s
 ```
 
 To make the TV client answer at all, three details were needed, all found by comparing our requests with

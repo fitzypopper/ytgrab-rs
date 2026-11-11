@@ -112,6 +112,18 @@ discovered by comparing requests with yt-dlp's:
 
 Without the visitor id the TV client answers `LOGIN_REQUIRED`.
 
+## What works now, end to end
+
+| video | client used | result |
+|---|---|---|
+| Rick Astley, 1080p (77 MB) | ANDROID | 4.4 s |
+| Rick Astley, 4K (342 MB) | ANDROID | 15.8 s |
+| a 1 hour ambient video, 1080p (944 MB) | ANDROID refused it, then TV | 252 s, full 944 MB |
+
+The Android client is tried first because it needs no JavaScript. Only when
+googlevideo refuses its formats does ytgrab pay for the watch page, the
+player script and the challenge solving.
+
 ## The throttling discovery (important)
 
 Measured on the same 720p video (26 MB), same machine, same minute:

@@ -32,6 +32,9 @@ Measured on the same machine, same video, back to back:
 | 1080p (77 MB) | 12.0 s | **2.9 s** |
 | 4K (342 MB) | 25.1 s | **15.9 s** |
 
+A one hour video where the Android client is refused: ytgrab switches to the
+TV client, solves the challenge and still delivers the full 944 MB at 1080p.
+
 The parallel path was verified to produce byte-identical output to the
 sequential one (`sha256` match).
 

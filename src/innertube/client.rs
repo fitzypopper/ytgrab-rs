@@ -21,6 +21,13 @@ const CLIENT_ID_MWEB: u32 = 2;
 const CLIENT_ID_WEB: u32 = 1;
 const CLIENT_ID_TV: u32 = 7;
 
+/// The InnerTube API keys below are **not** secrets.
+///
+/// They are shipped in YouTube's own player JavaScript and are used by every
+/// tool that talks to the InnerTube API (yt-dlp included). They only say
+/// which client is asking; there is no account and no quota behind them.
+/// GitHub's secret scanning flags them anyway, which is why they are listed
+/// in `.github/secret_scanning.yml`.
 #[derive(Debug, Clone)]
 pub struct ClientContext {
     pub name: &'static str,

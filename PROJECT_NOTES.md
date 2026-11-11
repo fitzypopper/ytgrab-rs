@@ -210,6 +210,25 @@ carry `n=<computed>` — but that needs a PO token and a JS runtime.
 The workaround in ytgrab: on a 403, mint a fresh URL and fall back to the
 next best format, preferring the ones whose URL has `ratebypass=yes`.
 
+## Interrupted downloads
+
+The downloader writes to `<file>.part` and renames it when complete, so an
+interrupted run never leaves a half written file under the real name. On
+restart it sends `Range: bytes=<already downloaded>-` and continues.
+
+If the connection dies mid-transfer the same happens: the bytes so far are
+kept and the request is retried with the next range. If the server answers
+403 the chunk size is halved (15 MiB -> 8 MiB -> ... -> 256 KiB) and the
+request is tried again, because a 403 usually means "that range was too
+big" rather than "expired".
+
+Two instances cannot corrupt each other: a lock file (`<file>.lock`) holds
+the pid of the process that owns the download, and a lock left behind by a
+crashed process is taken over once that pid is gone.
+
+`tests/resume.rs` covers all of this against a local server that drops
+connections on purpose.
+
 ## Bugs found and fixed during the build
 
 - Template renderer emitted the conversion character (`%(title)s` -> `title` + `s`).

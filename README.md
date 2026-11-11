@@ -129,6 +129,26 @@ googlevideo refused format 137 (HTTP 403); retrying through the TV client
 Saved tv137.mp4                                  # 944 MB, 1080p
 ```
 
+## Interrupted downloads
+
+Downloads are resumable. The bytes land in a `.part` file first and are
+renamed when the file is complete, so an interrupted run leaves a partial
+file behind instead of a broken one:
+
+```
+$ ytgrab -f 137 "https://youtu.be/JBoUwElRFVM"      # killed halfway
+$ ytgrab -f 137 "https://youtu.be/JBoUwElRFVM"      # picks up where it stopped
+```
+
+The restart continues with a `Range` request from the byte it already has.
+A connection that dies mid-transfer is retried the same way, and the chunk
+size is halved if the server refuses the request.
+
+There are tests for this in `tests/resume.rs`: a local server that drops
+every third connection, a download that starts with half the file already on
+disk, and a check that the parallel and sequential paths produce identical
+bytes.
+
 ## Cookies
 
 ```sh

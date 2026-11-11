@@ -24,16 +24,25 @@ ytgrab "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
   roughly 250 kB/s but serves parallel `Range` requests at full speed, so
   large files are split into 8 ranges automatically.
 
-Measured on the same machine, same video, back to back:
+Measured on the same machine, same videos, back to back:
 
 | | yt-dlp | ytgrab |
 |---|---|---|
 | 720p (26 MB) | 8.0 s | **2.0 s** |
-| 1080p (77 MB) | 12.0 s | **2.9 s** |
+| 1080p (77 MB) | 14.7 s | **4.4 s** |
 | 4K (342 MB) | 25.1 s | **15.9 s** |
+| 1080p (944 MB), Android client refused | 51.8 s | **37.8 s** |
 
-A one hour video where the Android client is refused: ytgrab switches to the
-TV client, solves the challenge and still delivers the full 944 MB at 1080p.
+The last row is the interesting one: googlevideo refuses that video's high
+quality formats for the Android client, so ytgrab switches to the TV client,
+solves the challenge and still delivers the full 944 MB at 1080p.
+
+Two things make the difference:
+
+* **Parallel byte ranges.** YouTube throttles a single connection to roughly
+  250 kB/s but serves parallel `Range` requests at full speed.
+* **8 MiB requests.** The server shapes the bandwidth of a long request:
+  8 MiB chunks ran at 18.8 MB/s while 15 MiB chunks collapsed to 3.2 MB/s.
 
 The parallel path was verified to produce byte-identical output to the
 sequential one (`sha256` match).

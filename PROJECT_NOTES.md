@@ -114,15 +114,36 @@ Without the visitor id the TV client answers `LOGIN_REQUIRED`.
 
 ## What works now, end to end
 
-| video | client used | result |
-|---|---|---|
-| Rick Astley, 1080p (77 MB) | ANDROID | 4.4 s |
-| Rick Astley, 4K (342 MB) | ANDROID | 15.8 s |
-| a 1 hour ambient video, 1080p (944 MB) | ANDROID refused it, then TV | 252 s, full 944 MB |
+| video | yt-dlp | ytgrab | client used |
+|---|---|---|---|
+| Rick Astley, 1080p (77 MB) | 14.7 s | **4.4 s** | ANDROID |
+| Rick Astley, 4K (342 MB) | 25.1 s | **15.9 s** | ANDROID |
+| a 1 hour ambient video, 1080p (944 MB) | 51.8 s | **37.8 s** | ANDROID refused it, then TV |
+
+The 944 MB case was 252 s before the chunk size was fixed — see below.
 
 The Android client is tried first because it needs no JavaScript. Only when
 googlevideo refuses its formats does ytgrab pay for the watch page, the
 player script and the challenge solving.
+
+## The chunk size cliff
+
+googlevideo shapes the bandwidth of a long request. Measured on the same
+file, one connection at a time:
+
+| chunk size | 64 MB took |
+|---|---|
+| 2 MiB | 6.6 s |
+| 4 MiB | 4.5 s |
+| 8 MiB | **3.4 s** |
+| 15 MiB | 20.0 s |
+
+So 15 MiB chunks were running at a third of the speed of 8 MiB chunks. This
+was the single biggest performance bug in the project: the 944 MB video took
+252 s and now takes 37.8 s.
+
+yt-dlp avoids it differently: it downloads the **HLS manifest** (667 small
+fragments for that video) instead of the progressive URL.
 
 ## The throttling discovery (important)
 

@@ -19,13 +19,20 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::{Error, Result};
 
-/// The largest range googlevideo will serve in one response.
+/// The size of a single range request.
 ///
-/// Requests for a bigger range are answered with `403 Forbidden`, and so is
-/// a plain GET for the whole file — the server insists on ranged, bounded
-/// requests. The exact limit differs per format: some URLs happily serve
-/// hundreds of megabytes, others are capped at about 15 MiB.
-const CHUNK_SIZE: u64 = 15 * 1024 * 1024;
+/// Two different things depend on this number:
+///
+/// * googlevideo answers `403 Forbidden` for ranges that are too large, so
+///   the chunk has to stay below that limit (about 15 MiB for the worst
+///   case, and much smaller for some formats).
+/// * the server shapes the bandwidth of a long request: measured on the same
+///   file, 8 MiB chunks ran at 18.8 MB/s while 15 MiB chunks collapsed to
+///   3.2 MB/s. Staying under the cliff is worth a lot more than fewer
+///   requests.
+///
+/// 8 MiB sits comfortably below both limits.
+const CHUNK_SIZE: u64 = 8 * 1024 * 1024;
 
 /// The smallest range we bother trying.
 const MIN_CHUNK_SIZE: u64 = 256 * 1024;

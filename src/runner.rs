@@ -57,7 +57,7 @@ impl TvSource {
         let it = InnerTube::with_cookie_jar(ctx, self.jar.clone())?;
 
         let player = player::fetch_tv(&it, video_id).await?;
-        let mut formats =
+        let formats =
             player::all_formats(player.streaming_data.as_ref().expect("streaming data"));
 
         // Solve the throttling challenges with the player's JavaScript.
@@ -112,7 +112,6 @@ pub async fn run(cli: Cli) -> Result<()> {
     };
 
     let it = InnerTube::with_cookie_jar(ctx, jar.clone())?;
-    let tv = TvSource::new(jar.clone());
 
     let mut dl = Downloader::with_cookie_jar(it.user_agent(), jar.clone())?;
     dl.retries = cli.retries;

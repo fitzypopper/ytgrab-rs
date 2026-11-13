@@ -1,5 +1,6 @@
 //! ytgrab — a YouTube downloader written in Rust.
 
+pub mod archive;
 pub mod browser_cookies;
 pub mod cli;
 pub mod cookies;

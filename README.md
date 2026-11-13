@@ -149,6 +149,45 @@ every third connection, a download that starts with half the file already on
 disk, and a check that the parallel and sequential paths produce identical
 bytes.
 
+## Keeping track of what you already have
+
+```sh
+ytgrab --download-archive archive.txt --playlist "https://youtube.com/playlist?list=..."
+```
+
+The archive is a plain text file, one line per video:
+
+```
+youtube dQw4w9WgXcQ Never Gonna Give You Up
+```
+
+Videos already in it are skipped before a single request is made, and new
+ones are appended as they finish.
+
+## Picking videos and formats
+
+```sh
+ytgrab --match-filter "Minecraft" --playlist "https://youtube.com/playlist?list=..."
+ytgrab --match-filter "!Trailer" --playlist "..."        # invert it
+ytgrab --max-filesize 100M "https://youtu.be/..."        # skip the 4K versions
+ytgrab --min-filesize 10M "https://youtu.be/..."
+ytgrab --no-overwrites "https://youtu.be/..."            # keep what is there
+ytgrab --sleep-requests 2 --playlist "..."              # be nice to the server
+```
+
+## Looking without downloading
+
+```sh
+ytgrab --list-formats "https://youtu.be/..."       # what is on offer
+ytgrab --get-title --playlist "https://..."        # just the titles
+ytgrab --get-duration --skip-download "https://..."
+ytgrab --print "%(id)s\t%(title)s\t%(duration)s" --playlist "..."
+ytgrab --dump-json "https://youtu.be/..."          # everything, as JSON
+```
+
+`%(duration)s` is in seconds and `%(duration_string)s` is formatted
+(`3:33`), the same as yt-dlp.
+
 ## Cookies
 
 ```sh

@@ -229,6 +229,22 @@ crashed process is taken over once that pid is gone.
 `tests/resume.rs` covers all of this against a local server that drops
 connections on purpose.
 
+## Features that came after the first release
+
+* `--download-archive` — plain text file of already downloaded videos, same
+  format as yt-dlp. The check happens before any request, so a re-run over a
+  playlist costs almost nothing.
+* `--print` and the `--get-title` / `--get-id` / `--get-duration` /
+  `--get-uploader` shortcuts, plus `--skip-download`.
+* `--match-filter` — a regular expression against the title, `!` inverts it.
+* `--max-filesize` / `--min-filesize` — formats outside the limits are
+  dropped; if nothing is left the video is skipped rather than failing.
+* `--no-overwrites` — leave existing files alone.
+* `--sleep-requests` — wait between videos.
+
+`%(duration)s` is in seconds and `%(duration_string)s` is formatted, to
+match yt-dlp.
+
 ## Bugs found and fixed during the build
 
 - Template renderer emitted the conversion character (`%(title)s` -> `title` + `s`).

@@ -87,7 +87,8 @@ fn templates_render_like_yt_dlp() {
         "2 - Video Title.mp4"
     );
     assert_eq!(render("%(uploader)s/%(id)s.%(ext)s", &vars), "Someone/abc12345678.mp4");
-    assert_eq!(render("%(duration)s", &vars), "1:01");
+    assert_eq!(render("%(duration)s", &vars), "61", "duration is in seconds");
+    assert_eq!(render("%(duration_string)s", &vars), "1:01");
     assert_eq!(render("%(epoch)s", &vars), "1700000000");
 }
 

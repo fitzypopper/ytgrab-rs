@@ -107,6 +107,59 @@ pub struct Cli {
     #[arg(long)]
     pub prefer_opus: bool,
 
+    /// File that lists the videos already downloaded; they are skipped
+    #[arg(long, value_name = "FILE")]
+    pub download_archive: Option<PathBuf>,
+
+    /// Print this template for every video (yt-dlp template syntax)
+    #[arg(long, value_name = "TEMPLATE")]
+    pub print: Option<String>,
+
+    /// Do not download anything, only print
+    #[arg(long)]
+    pub skip_download: bool,
+
+    /// Print the title of every video
+    #[arg(long)]
+    pub get_title: bool,
+
+    /// Print the id of every video
+    #[arg(long)]
+    pub get_id: bool,
+
+    /// Print the duration of every video
+    #[arg(long)]
+    pub get_duration: bool,
+
+    /// Print the uploader of every video
+    #[arg(long)]
+    pub get_uploader: bool,
+
+    /// Only download videos whose title matches this regular expression
+    /// (prefix with ! to invert it)
+    #[arg(long, value_name = "REGEX")]
+    pub match_filter: Option<String>,
+
+    /// Skip videos whose file already exists
+    #[arg(long)]
+    pub no_overwrites: bool,
+
+    /// Overwrite existing files (the default)
+    #[arg(long)]
+    pub force_overwrites: bool,
+
+    /// Skip formats bigger than this, e.g. 50M or 1G
+    #[arg(long, value_name = "SIZE")]
+    pub max_filesize: Option<String>,
+
+    /// Skip formats smaller than this, e.g. 50M or 1G
+    #[arg(long, value_name = "SIZE")]
+    pub min_filesize: Option<String>,
+
+    /// Seconds to wait between videos
+    #[arg(long, value_name = "SECONDS", default_value_t = 0.0)]
+    pub sleep_requests: f64,
+
     /// Verbose logging
     #[arg(short = 'v', long)]
     pub verbose: bool,

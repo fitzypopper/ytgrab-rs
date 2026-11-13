@@ -128,6 +128,12 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     let it = InnerTube::with_cookie_jar(ctx, jar.clone())?;
 
+    // The archive of already downloaded videos.
+    let archive = match &cli.download_archive {
+        Some(path) => Some(crate::archive::Archive::load(path)?),
+        None => None,
+    };
+
     let mut dl = Downloader::with_cookie_jar(it.user_agent(), jar.clone())?;
     dl.retries = cli.retries;
     dl.fragments = cli.fragments.max(1);
@@ -136,7 +142,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         Target::Video { id, playlist } => {
             let want_playlist = cli.playlist && !cli.no_playlist;
             match (want_playlist, playlist) {
-                (true, Some(list)) => download_playlist(&it, &dl, &cli, &list, jar.clone()).await,
+                (true, Some(list)) => {
+                    download_playlist(&it, &dl, &cli, &list, jar.clone(), archive.as_ref()).await
+                }
                 _ => {
                     download_video(
                         &it,
@@ -145,12 +153,15 @@ pub async fn run(cli: Cli) -> Result<()> {
                         &id,
                         &PlaylistContext::default(),
                         &mut TvSource::new(jar.clone()),
+                        archive.as_ref(),
                     )
                     .await
                 }
             }
         }
-        Target::Playlist { id } => download_playlist(&it, &dl, &cli, &id, jar.clone()).await,
+        Target::Playlist { id } => {
+            download_playlist(&it, &dl, &cli, &id, jar.clone(), archive.as_ref()).await
+        }
     }
 }
 
@@ -160,6 +171,7 @@ async fn download_playlist(
     cli: &Cli,
     playlist_id: &str,
     jar: Option<std::sync::Arc<reqwest::cookie::Jar>>,
+    archive: Option<&crate::archive::Archive>,
 ) -> Result<()> {
     if !cli.quiet {
         eprintln!("Fetching playlist {playlist_id} ...");
@@ -181,9 +193,15 @@ async fn download_playlist(
     let mut failures = 0;
     let mut tv = TvSource::new(jar);
     for (i, item) in items.iter().enumerate() {
+        // Be nice to the server.
+        if cli.sleep_requests > 0.0 && i > 0 {
+            tokio::time::sleep(std::time::Duration::from_secs_f64(cli.sleep_requests)).await;
+        }
         let mut item_ctx = ctx.clone();
         item_ctx.index = Some(i as u64 + 1);
-        if let Err(e) = download_video(it, dl, cli, &item.video_id, &item_ctx, &mut tv).await {
+        if let Err(e) =
+            download_video(it, dl, cli, &item.video_id, &item_ctx, &mut tv, archive).await
+        {
             failures += 1;
             eprintln!("error: {} failed: {e}", item.video_id);
         }
@@ -205,7 +223,19 @@ async fn download_video(
     video_id: &str,
     pctx: &PlaylistContext,
     tv: &mut TvSource,
+    archive: Option<&crate::archive::Archive>,
 ) -> Result<()> {
+    // The archive is checked before anything else: a video that was already
+    // downloaded should not cost a single request.
+    if let Some(archive) = archive {
+        if archive.contains(video_id) {
+            if !cli.quiet {
+                eprintln!("Skipping {video_id}: already in the archive");
+            }
+            return Ok(());
+        }
+    }
+
     // googlevideo serves some formats only in small windows and refuses
     // larger range requests with a 403. When that happens, mint a fresh URL
     // and fall back to the next best format.
@@ -233,6 +263,34 @@ async fn download_video(
             return Ok(());
         }
 
+        let details = player.video_details.clone().unwrap_or_default();
+
+        // Only download videos whose title matches the filter.
+        if let Some(filter) = &cli.match_filter {
+            if !title_matches(filter, &details.title) {
+                if !cli.quiet {
+                    eprintln!("Skipping {video_id}: the title does not match the filter");
+                }
+                return Ok(());
+            }
+        }
+
+        // Print the requested fields, then maybe stop here.
+        let printed = print_fields(cli, &details, video_id, pctx);
+        if printed || cli.skip_download {
+            return Ok(());
+        }
+
+        // Drop the formats that are too big or too small. If nothing is
+        // left the video is skipped, the way yt-dlp does it.
+        let formats = filter_by_size(formats, cli)?;
+        if formats.is_empty() {
+            if !cli.quiet {
+                eprintln!("Skipping {video_id}: no format fits the size limits");
+            }
+            return Ok(());
+        }
+
         let selector = Selector::parse(&cli.format)?;
         let selection = formats::select_excluding_with(
             &selector,
@@ -251,7 +309,6 @@ async fn download_video(
             return Ok(());
         }
 
-        let details = player.video_details.clone().unwrap_or_default();
         if cli.dump_json {
             println!("{}", build_info_json(&player, &selection, video_id));
             return Ok(());
@@ -267,7 +324,12 @@ async fn download_video(
         }
 
         match download_streams(dl, cli, &player, &details, &selection, pctx, video_id).await {
-            Ok(()) => return Ok(()),
+            Ok(()) => {
+                if let Some(archive) = archive {
+                    archive.record(video_id, &details.title)?;
+                }
+                return Ok(());
+            }
             Err(Error::SignedUrl { status, itag }) => {
                 if !use_tv {
                     use_tv = true;
@@ -440,6 +502,14 @@ async fn download_streams(
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
         }
+    }
+
+    // Leave existing files alone unless the user says otherwise.
+    if cli.no_overwrites && out_path.exists() {
+        if !cli.quiet {
+            eprintln!("Skipping {}: the file already exists", out_path.display());
+        }
+        return Ok(());
     }
 
     let stem = out_path
@@ -677,6 +747,109 @@ fn json3_url(base: &str) -> Option<String> {
 // helpers
 // ---------------------------------------------------------------------------
 
+/// Does the title match the filter?
+///
+/// The filter is a regular expression. A leading `!` inverts it.
+fn title_matches(filter: &str, title: &str) -> bool {
+    let (invert, pattern) = match filter.strip_prefix('!') {
+        Some(rest) => (true, rest),
+        None => (false, filter),
+    };
+
+    let matched = match regex::Regex::new(pattern) {
+        Ok(re) => re.is_match(title),
+        Err(e) => {
+            eprintln!("warning: bad match filter `{filter}`: {e}");
+            false
+        }
+    };
+    if invert {
+        !matched
+    } else {
+        matched
+    }
+}
+
+/// Drop the formats that are outside the size limits.
+fn filter_by_size(formats: Vec<Format>, cli: &Cli) -> Result<Vec<Format>> {
+    let max = match &cli.max_filesize {
+        Some(v) => Some(
+            output::parse_size(v)
+                .ok_or_else(|| Error::other(format!("bad --max-filesize value `{v}`")))?,
+        ),
+        None => None,
+    };
+    let min = match &cli.min_filesize {
+        Some(v) => Some(
+            output::parse_size(v)
+                .ok_or_else(|| Error::other(format!("bad --min-filesize value `{v}`")))?,
+        ),
+        None => None,
+    };
+    if max.is_none() && min.is_none() {
+        return Ok(formats);
+    }
+
+    let kept: Vec<Format> = formats
+        .into_iter()
+        .filter(|f| match f.size_bytes() {
+            Some(size) => {
+                max.map(|m| size <= m).unwrap_or(true) && min.map(|m| size >= m).unwrap_or(true)
+            }
+            // Formats without a known size are kept: the limit is about the
+            // ones we can measure.
+            None => true,
+        })
+        .collect();
+
+    Ok(kept)
+}
+
+/// Print the requested fields. Returns true when something was printed.
+fn print_fields(
+    cli: &Cli,
+    details: &VideoDetails,
+    video_id: &str,
+    pctx: &PlaylistContext,
+) -> bool {
+    let vars = TemplateVars {
+        title: details.title.clone(),
+        id: video_id.to_string(),
+        ext: String::new(),
+        uploader: details.author.clone().unwrap_or_default(),
+        duration_secs: details.duration_secs(),
+        resolution: String::new(),
+        format_id: String::new(),
+        playlist_index: pctx.index,
+        playlist_title: pctx.title.clone(),
+        playlist_id: pctx.id.clone(),
+        epoch: chrono::Utc::now().timestamp() as u64,
+    };
+
+    let mut printed = false;
+    if cli.get_title {
+        println!("{}", vars.title);
+        printed = true;
+    }
+    if cli.get_id {
+        println!("{video_id}");
+        printed = true;
+    }
+    if cli.get_duration {
+        println!("{}", details.duration_secs().unwrap_or(0));
+        printed = true;
+    }
+    if cli.get_uploader {
+        println!("{}", vars.uploader);
+        printed = true;
+    }
+    if let Some(template) = &cli.print {
+        println!("{}", output::render(template, &vars));
+        printed = true;
+    }
+    printed
+}
+
 /// How many alternative formats to try when googlevideo refuses one.
 const MAX_FORMAT_FALLBACKS: usize = 6;
 
@@ -842,4 +1015,58 @@ pub fn caption_languages(player: &PlayerResponse) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn cli(args: &[&str]) -> Cli {
+        let mut full = vec!["ytgrab", "https://example.com/watch?v=abc"];
+        full.extend_from_slice(args);
+        Cli::parse_from(full)
+    }
+
+    #[test]
+    fn the_filter_matches_the_title() {
+        assert!(title_matches("Rick", "Rick Astley - Live"));
+        assert!(!title_matches("Minecraft", "Rick Astley - Live"));
+    }
+
+    #[test]
+    fn a_bang_inverts_the_filter() {
+        assert!(title_matches("!Minecraft", "Rick Astley - Live"));
+        assert!(!title_matches("!Rick", "Rick Astley - Live"));
+    }
+
+    #[test]
+    fn a_broken_filter_matches_nothing() {
+        assert!(!title_matches("[unclosed", "Never Gonna Give You Up"));
+    }
+
+    #[test]
+    fn the_size_limits_drop_formats() {
+        // The size comes from `content_length`.
+        let format = Format {
+            itag: 137,
+            content_length: Some(80 * 1024 * 1024),
+            ..Default::default()
+        };
+
+        let kept = filter_by_size(vec![format.clone()], &cli(&["--max-filesize", "50M"])).unwrap();
+        assert!(kept.is_empty(), "80MB does not fit into 50MB");
+
+        let kept = filter_by_size(vec![format.clone()], &cli(&["--min-filesize", "50M"])).unwrap();
+        assert_eq!(kept.len(), 1);
+
+        let kept = filter_by_size(vec![format], &cli(&[])).unwrap();
+        assert_eq!(kept.len(), 1, "without limits nothing is dropped");
+    }
+
+    #[test]
+    fn a_bad_size_is_an_error() {
+        let result = filter_by_size(vec![], &cli(&["--max-filesize", "banana"]));
+        assert!(result.is_err());
+    }
 }

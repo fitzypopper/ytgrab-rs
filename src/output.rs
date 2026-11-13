@@ -25,11 +25,16 @@ impl TemplateVars {
         m.insert("ext".into(), self.ext.clone());
         m.insert("uploader".into(), self.uploader.clone());
         m.insert("artist".into(), self.uploader.clone());
+        // yt-dlp's %(duration)s is in seconds, %(duration_string)s is
+        // formatted.
         m.insert(
             "duration".into(),
+            self.duration_secs.map(|d| d.to_string()).unwrap_or_default(),
+        );
+        m.insert(
+            "duration_string".into(),
             self.duration_secs.map(format_duration).unwrap_or_default(),
         );
-        m.insert("duration_string".into(), self.duration_secs.map(format_duration).unwrap_or_default());
         m.insert("resolution".into(), self.resolution.clone());
         m.insert("format_id".into(), self.format_id.clone());
         m.insert("height".into(), self.resolution.trim_end_matches('p').to_string());
@@ -145,6 +150,28 @@ pub fn sanitize_path(path: &str) -> String {
     }
 }
 
+/// Parse a human readable size such as `50M`, `1.5G` or `700` into bytes.
+pub fn parse_size(input: &str) -> Option<u64> {
+    let input = input.trim();
+    if input.is_empty() {
+        return None;
+    }
+
+    let (number, multiplier) = match input.as_bytes()[input.len() - 1] {
+        b'k' | b'K' => (&input[..input.len() - 1], 1024u64),
+        b'm' | b'M' => (&input[..input.len() - 1], 1024 * 1024),
+        b'g' | b'G' => (&input[..input.len() - 1], 1024 * 1024 * 1024),
+        b't' | b'T' => (&input[..input.len() - 1], 1024u64 * 1024 * 1024 * 1024),
+        _ => (input, 1),
+    };
+
+    let value: f64 = number.trim().parse().ok()?;
+    if value < 0.0 {
+        return None;
+    }
+    Some((value * multiplier as f64) as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +217,16 @@ mod tests {
         assert_eq!(sanitize_path("a/b/out.mp4"), "a/b/out.mp4");
         // ".." is neutralised, it cannot escape the current directory.
         assert_eq!(sanitize_path("../etc/passwd"), "video/etc/passwd");
+    }
+
+    #[test]
+    fn parses_sizes() {
+        assert_eq!(parse_size("700"), Some(700));
+        assert_eq!(parse_size("50M"), Some(50 * 1024 * 1024));
+        assert_eq!(parse_size("1G"), Some(1024 * 1024 * 1024));
+        assert_eq!(parse_size("1.5G"), Some(1_610_612_736));
+        assert_eq!(parse_size(""), None);
+        assert_eq!(parse_size("abc"), None);
     }
 
     #[test]

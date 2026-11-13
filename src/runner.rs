@@ -30,6 +30,11 @@ struct TvSource {
     /// The player script, reduced to the part that solves challenges. It is
     /// the same for every video of a session, so it is only built once.
     preprocessed: Option<String>,
+    /// The session data, cached on disk so the next run does not have to
+    /// download the watch page and the player script again.
+    cache: Option<crate::cache::SessionCache>,
+    /// Set when the cached session turned out to be stale.
+    refreshed: bool,
 }
 
 impl TvSource {
@@ -39,6 +44,8 @@ impl TvSource {
             watch: None,
             player_js: None,
             preprocessed: None,
+            cache: crate::cache::SessionCache::open(),
+            refreshed: false,
         }
     }
 
@@ -50,6 +57,25 @@ impl TvSource {
             )
             .build()?;
 
+        // The session data (visitor id, player script, preprocessed player)
+        // is the same for every video, so it is cached on disk and the next
+        // run does not have to download or parse any of it again.
+        if self.watch.is_none() {
+            if let Some(cache) = &self.cache {
+                if let Some(session) = cache.load() {
+                    self.preprocessed = Some(session.preprocessed.clone());
+                    self.player_js = Some(session.player_js.clone());
+                    self.watch = Some(crate::innertube::web::WatchPage {
+                        visitor_data: session.visitor_data,
+                        signature_timestamp: session.signature_timestamp,
+                        player_js_url: session.player_js_url,
+                        api_key: String::new(),
+                        client_version: String::new(),
+                    });
+                }
+            }
+        }
+
         if self.watch.is_none() {
             self.watch = Some(crate::innertube::web::fetch(&http, video_id).await?);
         }
@@ -59,10 +85,6 @@ impl TvSource {
         ctx.visitor_data = Some(watch.visitor_data.clone());
         ctx.signature_timestamp = Some(watch.signature_timestamp);
         let it = InnerTube::with_cookie_jar(ctx, self.jar.clone())?;
-
-        let player = player::fetch_tv(&it, video_id).await?;
-        let formats =
-            player::all_formats(player.streaming_data.as_ref().expect("streaming data"));
 
         // Solve the throttling challenges with the player's JavaScript.
         if self.preprocessed.is_none() {
@@ -79,6 +101,30 @@ impl TvSource {
             .map_err(|e| Error::other(format!("the solver thread died: {e}")))??;
             self.preprocessed = Some(preprocessed);
         }
+
+        let player = match player::fetch_tv(&it, video_id).await {
+            Ok(player) => player,
+            Err(e) => {
+                // A cached visitor id can go stale. Fetch a fresh session and
+                // try once more.
+                let message = e.to_string().to_lowercase();
+                let stale = message.contains("login") || message.contains("reload");
+                if !stale || self.refreshed {
+                    return Err(e);
+                }
+                self.refreshed = true;
+                if let Some(cache) = &self.cache {
+                    cache.clear();
+                }
+                self.watch = None;
+                self.player_js = None;
+                self.preprocessed = None;
+                return Box::pin(self.formats(video_id)).await;
+            }
+        };
+
+        let formats =
+            player::all_formats(player.streaming_data.as_ref().expect("streaming data"));
         let preprocessed = self.preprocessed.clone().expect("just built");
         let solved = tokio::task::spawn_blocking(move || {
             let mut formats = formats;
@@ -87,6 +133,23 @@ impl TvSource {
         })
         .await
         .map_err(|e| Error::other(format!("the solver thread died: {e}")))??;
+
+        // Remember the session for the next run.
+        if let Some(cache) = &self.cache {
+            if let (Some(player_js), Some(preprocessed)) =
+                (self.player_js.clone(), self.preprocessed.clone())
+            {
+                let mut session = crate::cache::Session {
+                    visitor_data: watch.visitor_data.clone(),
+                    signature_timestamp: watch.signature_timestamp,
+                    player_js_url: watch.player_js_url.clone(),
+                    player_js,
+                    preprocessed,
+                    fetched_at: 0,
+                };
+                let _ = cache.save(&mut session);
+            }
+        }
 
         Ok((player, solved))
     }
@@ -523,46 +586,69 @@ async fn download_streams(
 
     let mp = MultiProgress::new();
 
-    // ---- video -----------------------------------------------------------
+    // ---- video and audio, at the same time -------------------------------
     let video_tmp = parent.join(format!("{stem}.f{}.{video_ext}", video.itag));
     let video_url = video
         .url
         .clone()
         .ok_or_else(|| Error::other("video stream has no url (signature cipher unsupported)"))?;
 
+    let audio_plan = match audio {
+        Some(a) => {
+            let ext = a.ext();
+            let tmp = parent.join(format!("{stem}.f{}.{ext}", a.itag));
+            let url = a
+                .url
+                .clone()
+                .ok_or_else(|| Error::other("audio stream has no url"))?;
+            Some((a, url, tmp))
+        }
+        None => None,
+    };
+
     let video_bar = mp.add(mux_progress_bar(video.size_bytes(), "video"));
-    dl.download(
+    let audio_bar = audio_plan
+        .as_ref()
+        .map(|(a, _, _)| mp.add(mux_progress_bar(a.size_bytes(), "audio")));
+
+    // The two streams do not depend on each other, so they are fetched at
+    // the same time instead of one after the other.
+    let video_task = dl.download(
         &video_url,
         &video_tmp,
         &video_bar,
         video.size_bytes(),
         fragment_count(cli, video.size_bytes()),
         video.itag,
-    )
-    .await?;
-    video_bar.finish_and_clear();
+    );
+    let audio_task = async {
+        match (&audio_plan, &audio_bar) {
+            (Some((a, url, tmp)), Some(bar)) => {
+                dl.download(
+                    url,
+                    tmp,
+                    bar,
+                    a.size_bytes(),
+                    fragment_count(cli, a.size_bytes()),
+                    a.itag,
+                )
+                .await
+            }
+            _ => Ok(0),
+        }
+    };
 
-    // ---- audio -----------------------------------------------------------
-    let mut audio_tmp: Option<PathBuf> = None;
-    if let Some(a) = audio {
-        let aext = a.ext();
-        let tmp = parent.join(format!("{stem}.f{}.{aext}", a.itag));
-        let url = a
-            .url
-            .clone()
-            .ok_or_else(|| Error::other("audio stream has no url"))?;
-        let bar = mp.add(mux_progress_bar(a.size_bytes(), "audio"));
-        dl.download(
-            &url,
-            &tmp,
-            &bar,
-            a.size_bytes(),
-            fragment_count(cli, a.size_bytes()),
-            a.itag,
-        )
-        .await?;
+    let (video_result, audio_result) = tokio::join!(video_task, audio_task);
+    video_result?;
+    audio_result?;
+    video_bar.finish_and_clear();
+    if let Some(bar) = &audio_bar {
         bar.finish_and_clear();
-        audio_tmp = Some(tmp);
+    }
+
+    let mut audio_tmp: Option<PathBuf> = None;
+    if let Some((_, _, tmp)) = &audio_plan {
+        audio_tmp = Some(tmp.clone());
     }
 
     // ---- combine ---------------------------------------------------------

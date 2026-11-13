@@ -274,6 +274,7 @@ impl Downloader {
         }
 
         finalize(&part_path, dest).await?;
+        check_size(dest, total).await?;
         Ok(existing.unwrap_or(0))
     }
 
@@ -379,6 +380,7 @@ impl Downloader {
         drop(out);
 
         finalize(&part_path, dest).await?;
+        check_size(dest, Some(total)).await?;
         Ok(total)
     }
 }
@@ -550,6 +552,26 @@ impl Drop for LockFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
+}
+
+/// Make sure the file on disk is as long as the server said it would be.
+///
+/// A download that stops early looks fine until it is muxed, so it is
+/// checked here and reported instead.
+async fn check_size(dest: &Path, total: Option<u64>) -> Result<()> {
+    let Some(expected) = total.filter(|t| *t > 0) else {
+        return Ok(());
+    };
+    let actual = tokio::fs::metadata(dest).await.map(|m| m.len()).unwrap_or(0);
+    if actual != expected {
+        return Err(Error::other(format!(
+            "the download is incomplete: {} bytes of {} ({:.1}%)",
+            actual,
+            expected,
+            actual as f64 / expected as f64 * 100.0
+        )));
+    }
+    Ok(())
 }
 
 fn part_path(dest: &Path) -> PathBuf {

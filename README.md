@@ -149,6 +149,20 @@ every third connection, a download that starts with half the file already on
 disk, and a check that the parallel and sequential paths produce identical
 bytes.
 
+## What gets cached
+
+The TV client needs a watch page, the player script and a parse of it before
+it can be used. None of that changes between runs, so it is cached in
+`~/.cache/ytgrab/`:
+
+```
+$ ytgrab -f 137 "https://youtu.be/JBoUwElRFVM"     # 39.7s (cold)
+$ ytgrab -f 137 "https://youtu.be/JBoUwElRFVM"     # 33.4s (warm cache)
+```
+
+A cached visitor id that has gone stale is detected (the server answers
+`LOGIN_REQUIRED`) and refreshed automatically.
+
 ## Keeping track of what you already have
 
 ```sh

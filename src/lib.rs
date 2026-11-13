@@ -2,6 +2,7 @@
 
 pub mod archive;
 pub mod browser_cookies;
+pub mod cache;
 pub mod cli;
 pub mod cookies;
 pub mod download;

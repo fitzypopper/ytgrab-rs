@@ -229,6 +229,26 @@ crashed process is taken over once that pid is gone.
 `tests/resume.rs` covers all of this against a local server that drops
 connections on purpose.
 
+## Speed work
+
+* **8 MiB range requests.** googlevideo shapes the bandwidth of a long
+  request: 8 MiB chunks ran at 18.8 MB/s while 15 MiB chunks collapsed to
+  3.2 MB/s. This was the single biggest win (252s -> 37.8s on a 944 MB
+  video).
+* **Parallel connections.** YouTube throttles a single connection to about
+  250 kB/s but serves parallel range requests at full speed. The number of
+  connections turned out not to matter much once the chunk size was right
+  (4, 8, 16 and 24 fragments all landed between 25 and 29 MB/s), so the
+  default stayed at 8.
+* **Video and audio at the same time.** The two streams are independent, so
+  they are now fetched concurrently instead of one after the other.
+* **A session cache.** The watch page, the player script and the parse of it
+  are cached in `~/.cache/ytgrab/`, which saves about 6 seconds and 3.9 MB
+  of traffic on every run after the first. A stale visitor id is detected
+  and refreshed.
+* **Size verification.** A download that stops early is now reported
+  instead of being muxed into a broken file.
+
 ## Features that came after the first release
 
 * `--download-archive` — plain text file of already downloaded videos, same

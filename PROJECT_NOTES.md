@@ -234,12 +234,30 @@ connections on purpose.
 * **8 MiB range requests.** googlevideo shapes the bandwidth of a long
   request: 8 MiB chunks ran at 18.8 MB/s while 15 MiB chunks collapsed to
   3.2 MB/s. This was the single biggest win (252s -> 37.8s on a 944 MB
-  video).
+  video). The chunk size and the number of connections were measured
+  against each other:
+
+  | chunk x connections | 77 MB video |
+  |---|---|
+  | 8 MiB x 8 | **3.39 s (26.4 MB/s)** |
+  | 8 MiB x 16 | 3.56 s (25.1 MB/s) |
+  | 4 MiB x 8 | 3.66 s (24.5 MB/s) |
+  | 4 MiB x 16 | 4.18 s (21.4 MB/s) |
+  | 2 MiB x 16 | 4.42 s (20.3 MB/s) |
+  | 1 MiB x 32 | 5.21 s (17.2 MB/s) |
+
+  Smaller chunks mean more requests and more overhead; more connections
+  than eight make things worse, not better. `--chunk-size` and
+  `--fragments` are exposed for tuning.
 * **Parallel connections.** YouTube throttles a single connection to about
   250 kB/s but serves parallel range requests at full speed. The number of
   connections turned out not to matter much once the chunk size was right
   (4, 8, 16 and 24 fragments all landed between 25 and 29 MB/s), so the
   default stayed at 8.
+* **The HLS path is not worth it.** yt-dlp downloads hard videos over HLS
+  (667 fragments of ~25 kB each, with `ratebypass=yes` in the URLs). The
+  fragments are tiny and latency bound: four of them took 0.56 s on one
+  connection. The progressive path with 8 MiB chunks is faster and simpler.
 * **Video and audio at the same time.** The two streams are independent, so
   they are now fetched concurrently instead of one after the other.
 * **A session cache.** The watch page, the player script and the parse of it

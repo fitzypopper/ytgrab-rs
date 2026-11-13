@@ -44,6 +44,8 @@ pub struct Downloader {
     pub retries: u32,
     /// Number of parallel byte-range segments (1 = plain sequential).
     pub fragments: usize,
+    /// Size of a single range request.
+    pub chunk_size: u64,
 }
 
 impl Downloader {
@@ -68,6 +70,7 @@ impl Downloader {
             user_agent: user_agent.to_string(),
             retries: 5,
             fragments: 1,
+            chunk_size: CHUNK_SIZE,
         })
     }
 
@@ -112,6 +115,15 @@ impl Downloader {
         self.download_single(url, dest, bar, total_hint, itag).await
     }
 
+    /// The size of a single range request.
+    fn chunk(&self) -> u64 {
+        if self.chunk_size == 0 {
+            CHUNK_SIZE
+        } else {
+            self.chunk_size
+        }
+    }
+
     async fn download_single(
         &self,
         url: &str,
@@ -153,7 +165,7 @@ impl Downloader {
         // Start with the biggest range we are willing to ask for and shrink
         // it if the server refuses. Some formats are only served in small
         // windows, and 403 means "too big", not "expired".
-        let mut chunk = CHUNK_SIZE;
+        let mut chunk = self.chunk();
         loop {
             let offset = existing.unwrap_or(0);
             if let Some(t) = total {
@@ -320,6 +332,7 @@ impl Downloader {
     ) -> Result<u64> {
         let n = fragments.max(1);
         let chunk = total.div_ceil(n as u64);
+        let chunk_size = self.chunk();
         let part_path = part_path(dest);
         if let Some(parent) = part_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
@@ -343,7 +356,16 @@ impl Downloader {
 
             handles.push(tokio::spawn(async move {
                 download_range(
-                    &http, &url, &seg_path, start, end, &bar, &downloaded, retries, itag,
+                    &http,
+                    &url,
+                    &seg_path,
+                    start,
+                    end,
+                    &bar,
+                    &downloaded,
+                    retries,
+                    itag,
+                    chunk_size,
                 )
                 .await
             }));
@@ -396,6 +418,7 @@ async fn download_range(
     downloaded: &AtomicU64,
     retries: u32,
     itag: i64,
+    chunk_size: u64,
 ) -> Result<()> {
     let expected = end - start + 1;
 
@@ -410,7 +433,7 @@ async fn download_range(
     while have < expected {
         let from = start + have;
         // Bounded range: googlevideo answers 403 for anything longer.
-        let to = (from + CHUNK_SIZE - 1).min(end);
+        let to = (from + chunk_size - 1).min(end);
         let resp = http
             .get(url)
             .header("Accept-Encoding", "identity")

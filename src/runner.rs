@@ -200,6 +200,11 @@ pub async fn run(cli: Cli) -> Result<()> {
     let mut dl = Downloader::with_cookie_jar(it.user_agent(), jar.clone())?;
     dl.retries = cli.retries;
     dl.fragments = cli.fragments.max(1);
+    dl.chunk_size = match cli.chunk_size.as_str() {
+        "0" | "" => 0,
+        v => crate::output::parse_size(v)
+            .ok_or_else(|| Error::other(format!("bad --chunk-size value `{v}`")))?,
+    };
 
     match target {
         Target::Video { id, playlist } => {

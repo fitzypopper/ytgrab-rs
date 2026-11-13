@@ -91,6 +91,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 0)]
     pub fragments: usize,
 
+    /// Size of a single range request, e.g. 8M (0 = the tuned default)
+    #[arg(long, value_name = "SIZE", default_value = "0")]
+    pub chunk_size: String,
+
     /// Retry attempts per request
     #[arg(long, default_value_t = 5)]
     pub retries: u32,

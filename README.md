@@ -43,6 +43,9 @@ Two things make the difference:
   250 kB/s but serves parallel `Range` requests at full speed.
 * **8 MiB requests.** The server shapes the bandwidth of a long request:
   8 MiB chunks ran at 18.8 MB/s while 15 MiB chunks collapsed to 3.2 MB/s.
+  The chunk size and the number of connections were measured against each
+  other; 8 MiB with 8 connections is the optimum. `--chunk-size` and
+  `--fragments` let you go further if your connection likes it.
 
 The parallel path was verified to produce byte-identical output to the
 sequential one (`sha256` match).

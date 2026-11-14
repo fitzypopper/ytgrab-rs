@@ -22,6 +22,8 @@ pub struct WatchPage {
     pub api_key: String,
     /// The web client's version.
     pub client_version: String,
+    /// When the video was uploaded, as an ISO 8601 string.
+    pub upload_date: String,
 }
 
 /// Fetch the watch page and pull the interesting bits out of `ytcfg`.
@@ -62,6 +64,9 @@ pub async fn fetch(http: &Client, video_id: &str) -> Result<WatchPage> {
         format!("https://www.youtube.com{player_js}")
     };
 
+    // The upload date is in the initial data of the page.
+    let upload_date = extract_upload_date(&html).unwrap_or_default();
+
     Ok(WatchPage {
         visitor_data,
         signature_timestamp: cfg.get("STS").and_then(|v| v.as_i64()).unwrap_or(0),
@@ -76,6 +81,7 @@ pub async fn fetch(http: &Client, video_id: &str) -> Result<WatchPage> {
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string(),
+        upload_date,
     })
 }
 
@@ -156,6 +162,15 @@ fn find_json_end(html: &str, start: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Find the upload date in the page.
+fn extract_upload_date(html: &str) -> Option<String> {
+    let marker = "\"uploadDate\":\"";
+    let start = html.find(marker)? + marker.len();
+    let rest = &html[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
 }
 
 /// Download the player JavaScript.

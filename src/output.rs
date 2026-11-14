@@ -14,6 +14,10 @@ pub struct TemplateVars {
     pub playlist_index: Option<u64>,
     pub playlist_title: String,
     pub playlist_id: String,
+    /// The full path of the file, for --exec.
+    pub filepath: String,
+    /// The file name, for --exec.
+    pub filename: String,
     pub epoch: u64,
 }
 
@@ -44,6 +48,8 @@ impl TemplateVars {
         );
         m.insert("playlist".into(), self.playlist_title.clone());
         m.insert("playlist_id".into(), self.playlist_id.clone());
+        m.insert("filepath".into(), self.filepath.clone());
+        m.insert("filename".into(), self.filename.clone());
         m.insert("epoch".into(), self.epoch.to_string());
         m
     }
@@ -188,6 +194,8 @@ mod tests {
             playlist_index: None,
             playlist_title: String::new(),
             playlist_id: String::new(),
+            filepath: String::new(),
+            filename: String::new(),
             epoch: 0,
         }
     }

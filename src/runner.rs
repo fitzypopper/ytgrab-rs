@@ -38,13 +38,17 @@ struct TvSource {
 }
 
 impl TvSource {
-    fn new(jar: Option<std::sync::Arc<reqwest::cookie::Jar>>) -> Self {
+    fn new(jar: Option<std::sync::Arc<reqwest::cookie::Jar>>, no_cache: bool) -> Self {
         Self {
             jar,
             watch: None,
             player_js: None,
             preprocessed: None,
-            cache: crate::cache::SessionCache::open(),
+            cache: if no_cache {
+                None
+            } else {
+                crate::cache::SessionCache::open()
+            },
             refreshed: false,
         }
     }
@@ -71,6 +75,7 @@ impl TvSource {
                         player_js_url: session.player_js_url,
                         api_key: String::new(),
                         client_version: String::new(),
+                        upload_date: String::new(),
                     });
                 }
             }
@@ -189,6 +194,10 @@ pub async fn run(cli: Cli) -> Result<()> {
         (None, None) => None,
     };
 
+    // A proxy applies to the API calls and to the downloads.
+    let mut ctx = ctx;
+    ctx.proxy = cli.proxy.clone();
+
     let it = InnerTube::with_cookie_jar(ctx, jar.clone())?;
 
     // The archive of already downloaded videos.
@@ -197,9 +206,10 @@ pub async fn run(cli: Cli) -> Result<()> {
         None => None,
     };
 
-    let mut dl = Downloader::with_cookie_jar(it.user_agent(), jar.clone())?;
+    let mut dl = Downloader::build(it.user_agent(), jar.clone(), cli.proxy.clone())?;
     dl.retries = cli.retries;
     dl.fragments = cli.fragments.max(1);
+    dl.no_part = cli.no_part;
     dl.chunk_size = match cli.chunk_size.as_str() {
         "0" | "" => 0,
         v => crate::output::parse_size(v)
@@ -214,16 +224,20 @@ pub async fn run(cli: Cli) -> Result<()> {
                     download_playlist(&it, &dl, &cli, &list, jar.clone(), archive.as_ref()).await
                 }
                 _ => {
-                    download_video(
+                    let outcome = download_video(
                         &it,
                         &dl,
                         &cli,
                         &id,
                         &PlaylistContext::default(),
-                        &mut TvSource::new(jar.clone()),
+                        &mut TvSource::new(jar.clone(), cli.no_cache_dir),
                         archive.as_ref(),
                     )
-                    .await
+                    .await?;
+                    if outcome == DownloadOutcome::Exists && cli.break_on_existing && !cli.quiet {
+                        eprintln!("Breaking out: the file already exists");
+                    }
+                    Ok(())
                 }
             }
         }
@@ -259,19 +273,70 @@ async fn download_playlist(
     };
 
     let mut failures = 0;
-    let mut tv = TvSource::new(jar);
-    for (i, item) in items.iter().enumerate() {
+    let mut tv = TvSource::new(jar, cli.no_cache_dir);
+
+    // Which items of the playlist to take.
+    let picked = crate::playlist::select(
+        items.len(),
+        cli.playlist_start,
+        cli.playlist_end,
+        cli.playlist_items.as_deref(),
+        cli.playlist_reverse,
+        cli.playlist_random,
+    );
+    if picked.is_empty() {
+        if !cli.quiet {
+            eprintln!("The playlist selection is empty, nothing to do");
+        }
+        return Ok(());
+    }
+
+    let mut processed = 0usize;
+    for position in picked {
         // Be nice to the server.
-        if cli.sleep_requests > 0.0 && i > 0 {
+        if cli.sleep_requests > 0.0 && processed > 0 {
             tokio::time::sleep(std::time::Duration::from_secs_f64(cli.sleep_requests)).await;
         }
+        let Some(item) = items.get(position) else {
+            continue;
+        };
         let mut item_ctx = ctx.clone();
-        item_ctx.index = Some(i as u64 + 1);
-        if let Err(e) =
-            download_video(it, dl, cli, &item.video_id, &item_ctx, &mut tv, archive).await
+        item_ctx.index = Some(position as u64 + 1);
+
+        // The limit counts the videos that are processed, not only the ones
+        // that are downloaded.
+        if let Some(limit) = cli.max_downloads {
+            if processed >= limit {
+                break;
+            }
+        }
+        processed += 1;
+
+        match download_video(
+            it,
+            dl,
+            cli,
+            &item.video_id,
+            &item_ctx,
+            &mut tv,
+            archive,
+        )
+        .await
         {
-            failures += 1;
-            eprintln!("error: {} failed: {e}", item.video_id);
+            Ok(DownloadOutcome::Downloaded) => {}
+            Ok(DownloadOutcome::Skipped) => {}
+            Ok(DownloadOutcome::Exists) => {
+                if cli.break_on_existing {
+                    if !cli.quiet {
+                        eprintln!("Breaking out: the file already exists");
+                    }
+                    break;
+                }
+            }
+            Err(e) => {
+                failures += 1;
+                eprintln!("error: {} failed: {e}", item.video_id);
+            }
         }
     }
 
@@ -292,7 +357,7 @@ async fn download_video(
     pctx: &PlaylistContext,
     tv: &mut TvSource,
     archive: Option<&crate::archive::Archive>,
-) -> Result<()> {
+) -> Result<DownloadOutcome> {
     // The archive is checked before anything else: a video that was already
     // downloaded should not cost a single request.
     if let Some(archive) = archive {
@@ -300,7 +365,7 @@ async fn download_video(
             if !cli.quiet {
                 eprintln!("Skipping {video_id}: already in the archive");
             }
-            return Ok(());
+            return Ok(DownloadOutcome::Skipped);
         }
     }
 
@@ -328,7 +393,13 @@ async fn download_video(
 
         if cli.list_formats {
             print_formats(&formats);
-            return Ok(());
+            return Ok(DownloadOutcome::Skipped);
+        }
+
+        // List the available subtitles.
+        if cli.list_subs {
+            list_subtitles(&player);
+            return Ok(DownloadOutcome::Skipped);
         }
 
         let details = player.video_details.clone().unwrap_or_default();
@@ -339,14 +410,61 @@ async fn download_video(
                 if !cli.quiet {
                     eprintln!("Skipping {video_id}: the title does not match the filter");
                 }
-                return Ok(());
+                return Ok(DownloadOutcome::Skipped);
             }
+        }
+
+        // Only videos uploaded in a given window.
+        if cli.dateafter.is_some() || cli.datebefore.is_some() {
+            let after = match &cli.dateafter {
+                Some(spec) => Some(
+                    crate::dates::parse(spec)
+                        .ok_or_else(|| Error::other(format!("bad --dateafter value `{spec}`")))?,
+                ),
+                None => None,
+            };
+            let before = match &cli.datebefore {
+                Some(spec) => Some(
+                    crate::dates::parse(spec)
+                        .ok_or_else(|| Error::other(format!("bad --datebefore value `{spec}`")))?,
+                ),
+                None => None,
+            };
+            if let Some(upload) = upload_date(it, video_id).await {
+                if !crate::dates::matches(&upload, after, before) {
+                    if !cli.quiet {
+                        eprintln!("Skipping {video_id}: it was uploaded outside the date range");
+                    }
+                    return Ok(DownloadOutcome::Skipped);
+                }
+            }
+        }
+
+        // A command to run before the download.
+        if let Some(command) = &cli.exec_before_download {
+            let mut vars = TemplateVars {
+                title: details.title.clone(),
+                id: video_id.to_string(),
+                ext: String::new(),
+                uploader: details.author.clone().unwrap_or_default(),
+                duration_secs: details.duration_secs(),
+                resolution: String::new(),
+                format_id: String::new(),
+                playlist_index: pctx.index,
+                playlist_title: pctx.title.clone(),
+                playlist_id: pctx.id.clone(),
+                filepath: String::new(),
+                filename: String::new(),
+                epoch: chrono::Utc::now().timestamp() as u64,
+            };
+            vars.filepath = String::new();
+            crate::exec::run(command, &vars, std::path::Path::new("")).await?;
         }
 
         // Print the requested fields, then maybe stop here.
         let printed = print_fields(cli, &details, video_id, pctx);
         if printed || cli.skip_download {
-            return Ok(());
+            return Ok(DownloadOutcome::Skipped);
         }
 
         // Drop the formats that are too big or too small. If nothing is
@@ -356,7 +474,7 @@ async fn download_video(
             if !cli.quiet {
                 eprintln!("Skipping {video_id}: no format fits the size limits");
             }
-            return Ok(());
+            return Ok(DownloadOutcome::Skipped);
         }
 
         let selector = Selector::parse(&cli.format)?;
@@ -374,12 +492,12 @@ async fn download_video(
                     println!("{url}");
                 }
             }
-            return Ok(());
+            return Ok(DownloadOutcome::Skipped);
         }
 
         if cli.dump_json {
             println!("{}", build_info_json(&player, &selection, video_id));
-            return Ok(());
+            return Ok(DownloadOutcome::Skipped);
         }
 
         // Extracting audio never needs the video stream at all.
@@ -391,12 +509,14 @@ async fn download_video(
             return extract_audio_only(dl, cli, &details, &audio, pctx, video_id).await;
         }
 
-        match download_streams(dl, cli, &player, &details, &selection, pctx, video_id).await {
-            Ok(()) => {
-                if let Some(archive) = archive {
-                    archive.record(video_id, &details.title)?;
+        match download_streams(it, dl, cli, &player, &details, &selection, pctx, video_id).await {
+            Ok(outcome) => {
+                if outcome == DownloadOutcome::Downloaded {
+                    if let Some(archive) = archive {
+                        archive.record(video_id, &details.title)?;
+                    }
                 }
-                return Ok(());
+                return Ok(outcome);
             }
             Err(Error::SignedUrl { status, itag }) => {
                 if !use_tv {
@@ -434,7 +554,7 @@ async fn extract_audio_only(
     audio: &Format,
     pctx: &PlaylistContext,
     video_id: &str,
-) -> Result<()> {
+) -> Result<DownloadOutcome> {
     let vars = TemplateVars {
         title: details.title.clone(),
         id: video_id.to_string(),
@@ -447,6 +567,8 @@ async fn extract_audio_only(
         playlist_title: pctx.title.clone(),
         playlist_id: pctx.id.clone(),
         epoch: chrono::Utc::now().timestamp() as u64,
+        filepath: String::new(),
+        filename: String::new(),
     };
 
     let out_path = PathBuf::from(output::sanitize_path(&output::render(&cli.output, &vars)));
@@ -503,14 +625,16 @@ async fn extract_audio_only(
     if !cli.quiet {
         eprintln!("Saved {}", out_path.display());
     }
-    Ok(())
+    Ok(DownloadOutcome::Downloaded)
 }
 
 // ---------------------------------------------------------------------------
 // the actual download
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn download_streams(
+    it: &InnerTube,
     dl: &Downloader,
     cli: &Cli,
     player: &PlayerResponse,
@@ -518,7 +642,7 @@ async fn download_streams(
     selection: &formats::Selection,
     pctx: &PlaylistContext,
     video_id: &str,
-) -> Result<()> {
+) -> Result<DownloadOutcome> {
     let video = selection
         .videos
         .first()
@@ -563,9 +687,14 @@ async fn download_streams(
         playlist_title: pctx.title.clone(),
         playlist_id: pctx.id.clone(),
         epoch: chrono::Utc::now().timestamp() as u64,
+        filepath: String::new(),
+        filename: String::new(),
     };
 
-    let out_path = PathBuf::from(output::sanitize_path(&output::render(&cli.output, &vars)));
+    let out_path = apply_name_rules(
+        PathBuf::from(output::sanitize_path(&output::render(&cli.output, &vars))),
+        cli,
+    );
     if let Some(parent) = out_path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
@@ -577,7 +706,7 @@ async fn download_streams(
         if !cli.quiet {
             eprintln!("Skipping {}: the file already exists", out_path.display());
         }
-        return Ok(());
+        return Ok(DownloadOutcome::Exists);
     }
 
     let stem = out_path
@@ -690,7 +819,49 @@ async fn download_streams(
         }
     }
 
+    // ---- the commands ----------------------------------------------------
+    if let Some(command) = &cli.exec {
+        let mut vars = vars.clone();
+        vars.filepath = out_path.to_string_lossy().to_string();
+        vars.filename = out_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        crate::exec::run(command, &vars, &out_path).await?;
+    }
+
     // ---- sidecar files ---------------------------------------------------
+    if cli.write_description {
+        let path = parent.join(format!("{stem}.description"));
+        let description = details.short_description.clone().unwrap_or_default();
+        std::fs::write(&path, description)?;
+        if !cli.quiet {
+            eprintln!("Saved {}", path.display());
+        }
+    }
+
+    if cli.write_comments {
+        match crate::comments::fetch(it, video_id).await {
+            Ok(comments) if !comments.is_empty() => {
+                let path = parent.join(format!("{stem}.comments.json"));
+                std::fs::write(&path, crate::comments::to_json(&comments))?;
+                if !cli.quiet {
+                    eprintln!("Saved {}", path.display());
+                }
+            }
+            Ok(_) => {
+                if !cli.quiet {
+                    eprintln!("YouTube did not return the comments for this video");
+                }
+            }
+            Err(e) => {
+                if !cli.quiet {
+                    eprintln!("could not fetch the comments: {e}");
+                }
+            }
+        }
+    }
+
     if cli.write_info_json {
         let path = parent.join(format!("{stem}.info.json"));
         std::fs::write(&path, build_info_json(player, selection, video_id))?;
@@ -716,7 +887,7 @@ async fn download_streams(
         write_subtitles(dl, cli, player, &parent, &stem).await?;
     }
 
-    Ok(())
+    Ok(DownloadOutcome::Downloaded)
 }
 
 async fn write_subtitles(
@@ -838,6 +1009,61 @@ fn json3_url(base: &str) -> Option<String> {
 // helpers
 // ---------------------------------------------------------------------------
 
+/// Apply the file name rules the user asked for.
+fn apply_name_rules(path: PathBuf, cli: &Cli) -> PathBuf {
+    if cli.trim_filenames.is_none() && !cli.restrict_filenames && !cli.windows_filenames {
+        return path;
+    }
+    let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
+        return path;
+    };
+    let new_name = crate::filenames::apply(
+        &name,
+        cli.trim_filenames,
+        cli.restrict_filenames,
+        cli.windows_filenames,
+    );
+    path.with_file_name(new_name)
+}
+
+/// List the subtitles a video has.
+fn list_subtitles(player: &PlayerResponse) {
+    let Some(tracklist) = player
+        .captions
+        .as_ref()
+        .and_then(|c| c.player_captions_tracklist_renderer.as_ref())
+    else {
+        println!("No subtitles available");
+        return;
+    };
+
+    println!("Available subtitles:");
+    for track in &tracklist.caption_tracks {
+        let language = track.language_code.clone().unwrap_or_default();
+        let name = track.display_name();
+        let kind = if track.kind.as_deref() == Some("asr") {
+            "automatic"
+        } else {
+            "manual"
+        };
+        println!("  {language:<12} {name:<24} {kind}");
+    }
+}
+
+/// When was the video uploaded?
+async fn upload_date(it: &InnerTube, video_id: &str) -> Option<String> {
+    let http = reqwest::Client::builder()
+        .user_agent(it.user_agent())
+        .build()
+        .ok()?;
+    let page = crate::innertube::web::fetch(&http, video_id).await.ok()?;
+    if page.upload_date.is_empty() {
+        None
+    } else {
+        Some(page.upload_date)
+    }
+}
+
 /// Does the title match the filter?
 ///
 /// The filter is a regular expression. A leading `!` inverts it.
@@ -915,6 +1141,8 @@ fn print_fields(
         playlist_title: pctx.title.clone(),
         playlist_id: pctx.id.clone(),
         epoch: chrono::Utc::now().timestamp() as u64,
+        filepath: String::new(),
+        filename: String::new(),
     };
 
     let mut printed = false;
@@ -938,7 +1166,34 @@ fn print_fields(
         println!("{}", output::render(template, &vars));
         printed = true;
     }
+
+    // The same output, written to a file.
+    if cli.print_to_file.len() == 2 {
+        let template = &cli.print_to_file[0];
+        let file = output::render(&cli.print_to_file[1], &vars);
+        let text = output::render(template, &vars);
+        let path = PathBuf::from(file);
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+        let _ = std::fs::write(&path, format!("{text}\n"));
+        printed = true;
+    }
+
     printed
+}
+
+/// What happened to a video.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DownloadOutcome {
+    /// The file was downloaded.
+    Downloaded,
+    /// The video was skipped (filter, archive, size limit).
+    Skipped,
+    /// The file was already there.
+    Exists,
 }
 
 /// How many alternative formats to try when googlevideo refuses one.
@@ -960,6 +1215,8 @@ fn remove_stale_parts(details: &VideoDetails, pctx: &PlaylistContext, cli: &Cli)
         playlist_index: pctx.index,
         playlist_title: pctx.title.clone(),
         playlist_id: pctx.id.clone(),
+        filepath: String::new(),
+        filename: String::new(),
         epoch: 0,
     };
     let out_path = PathBuf::from(output::sanitize_path(&output::render(&cli.output, &vars)));

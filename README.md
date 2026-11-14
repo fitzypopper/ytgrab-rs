@@ -192,6 +192,38 @@ ytgrab --no-overwrites "https://youtu.be/..."            # keep what is there
 ytgrab --sleep-requests 2 --playlist "..."              # be nice to the server
 ```
 
+## Running commands, picking playlists, and the rest
+
+```sh
+# run something for every download
+ytgrab --exec "mv %(filepath)s ~/Videos/" URL
+ytgrab --exec-before-download "echo starting %(title)s" URL
+
+# pick parts of a playlist
+ytgrab --playlist --playlist-items "1:3,7,-2" URL
+ytgrab --playlist --playlist-start 2 --playlist-end 10 URL
+ytgrab --playlist --playlist-reverse URL
+ytgrab --playlist --max-downloads 5 URL
+ytgrab --playlist --break-on-existing URL
+
+# write the output somewhere else, keep the names short
+ytgrab --output "%(uploader)s/%(title)s.%(ext)s" URL
+ytgrab --trim-filenames 80 --restrict-filenames URL
+
+# only videos uploaded in a window
+ytgrab --dateafter 20240101 --datebefore 20241231 URL
+
+# keep options in a file
+ytgrab --config ytgrab.conf URL
+```
+
+```
+# ytgrab.conf
+--format bestvideo[height<=1080]+bestaudio
+--output "%(title)s.%(ext)s"
+--download-archive archive.txt
+```
+
 ## Looking without downloading
 
 ```sh
@@ -200,6 +232,8 @@ ytgrab --get-title --playlist "https://..."        # just the titles
 ytgrab --get-duration --skip-download "https://..."
 ytgrab --print "%(id)s\t%(title)s\t%(duration)s" --playlist "..."
 ytgrab --dump-json "https://youtu.be/..."          # everything, as JSON
+ytgrab --list-subs "https://youtu.be/..."           # the available subtitles
+ytgrab --print-to-file "%(id)s" ids.txt --skip-download "https://youtu.be/..."
 ```
 
 `%(duration)s` is in seconds and `%(duration_string)s` is formatted

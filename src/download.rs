@@ -46,6 +46,10 @@ pub struct Downloader {
     pub fragments: usize,
     /// Size of a single range request.
     pub chunk_size: u64,
+    /// Route the downloads through this proxy.
+    pub proxy: Option<String>,
+    /// Write straight to the final file instead of a .part file.
+    pub no_part: bool,
 }
 
 impl Downloader {
@@ -58,11 +62,25 @@ impl Downloader {
         user_agent: &str,
         jar: Option<std::sync::Arc<reqwest::cookie::Jar>>,
     ) -> Result<Self> {
+        Self::build(user_agent, jar, None)
+    }
+
+    /// Build a downloader that uses a proxy.
+    pub fn build(
+        user_agent: &str,
+        jar: Option<std::sync::Arc<reqwest::cookie::Jar>>,
+        proxy: Option<String>,
+    ) -> Result<Self> {
         let mut builder = reqwest::Client::builder()
             .user_agent(user_agent.to_string())
             .pool_max_idle_per_host(8);
         if let Some(jar) = jar {
             builder = builder.cookie_provider(jar);
+        }
+        if let Some(proxy) = &proxy {
+            let proxy = reqwest::Proxy::all(proxy)
+                .map_err(|e| crate::error::Error::other(format!("bad proxy `{proxy}`: {e}")))?;
+            builder = builder.proxy(proxy);
         }
         let http = builder.build()?;
         Ok(Self {
@@ -71,6 +89,8 @@ impl Downloader {
             retries: 5,
             fragments: 1,
             chunk_size: CHUNK_SIZE,
+            proxy: None,
+            no_part: false,
         })
     }
 
@@ -132,7 +152,11 @@ impl Downloader {
         total_hint: Option<u64>,
         itag: i64,
     ) -> Result<u64> {
-        let part_path = part_path(dest);
+        let part_path = if self.no_part {
+            dest.to_path_buf()
+        } else {
+            part_path(dest)
+        };
         if let Some(parent) = part_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -285,7 +309,9 @@ impl Downloader {
             }
         }
 
-        finalize(&part_path, dest).await?;
+        if !self.no_part {
+            finalize(&part_path, dest).await?;
+        }
         check_size(dest, total).await?;
         Ok(existing.unwrap_or(0))
     }

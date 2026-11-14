@@ -43,6 +43,8 @@ pub struct ClientContext {
     pub use_api_key: bool,
     /// The player signature timestamp (`STS`).
     pub signature_timestamp: Option<i64>,
+    /// Route every request through this proxy.
+    pub proxy: Option<String>,
 }
 
 impl ClientContext {
@@ -58,6 +60,7 @@ impl ClientContext {
             visitor_data: None,
             use_api_key: true,
             signature_timestamp: None,
+            proxy: None,
             extra: json!({
                 "androidSdkVersion": 34,
                 "osName": "Android",
@@ -76,6 +79,7 @@ impl ClientContext {
             visitor_data: None,
             use_api_key: true,
             signature_timestamp: None,
+            proxy: None,
             extra: json!({
                 "deviceMake": "Apple",
                 "deviceModel": "iPhone16,2",
@@ -95,6 +99,7 @@ impl ClientContext {
             visitor_data: None,
             use_api_key: true,
             signature_timestamp: None,
+            proxy: None,
             extra: json!({}),
         }
     }
@@ -109,6 +114,7 @@ impl ClientContext {
             visitor_data: None,
             use_api_key: true,
             signature_timestamp: None,
+            proxy: None,
             extra: json!({}),
         }
     }
@@ -132,6 +138,7 @@ impl ClientContext {
             visitor_data: None,
             use_api_key: false,
             signature_timestamp: None,
+            proxy: None,
         }
     }
 
@@ -145,6 +152,7 @@ impl ClientContext {
             visitor_data: None,
             use_api_key: true,
             signature_timestamp: None,
+            proxy: None,
             extra: json!({}),
         }
     }
@@ -199,6 +207,11 @@ impl InnerTube {
             .timeout(std::time::Duration::from_secs(30));
         if let Some(jar) = jar {
             builder = builder.cookie_provider(jar);
+        }
+        if let Some(proxy) = &ctx.proxy {
+            let proxy = reqwest::Proxy::all(proxy)
+                .map_err(|e| Error::other(format!("bad proxy `{proxy}`: {e}")))?;
+            builder = builder.proxy(proxy);
         }
         let http = builder.build()?;
         Ok(Self { http, ctx })

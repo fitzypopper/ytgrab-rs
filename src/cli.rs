@@ -164,6 +164,98 @@ pub struct Cli {
     #[arg(long, value_name = "SECONDS", default_value_t = 0.0)]
     pub sleep_requests: f64,
 
+    /// Run this shell command for every downloaded file
+    #[arg(long, value_name = "CMD")]
+    pub exec: Option<String>,
+
+    /// Run this shell command before every download
+    #[arg(long, value_name = "CMD")]
+    pub exec_before_download: Option<String>,
+
+    /// Start of the playlist (1 based)
+    #[arg(long, value_name = "N")]
+    pub playlist_start: Option<usize>,
+
+    /// End of the playlist (1 based, inclusive)
+    #[arg(long, value_name = "N")]
+    pub playlist_end: Option<usize>,
+
+    /// Which items of the playlist, e.g. 1:3,7,-2
+    #[arg(long, value_name = "SPEC")]
+    pub playlist_items: Option<String>,
+
+    /// Download the playlist backwards
+    #[arg(long)]
+    pub playlist_reverse: bool,
+
+    /// Download the playlist in a random order
+    #[arg(long)]
+    pub playlist_random: bool,
+
+    /// Stop after this many videos
+    #[arg(long, value_name = "N")]
+    pub max_downloads: Option<usize>,
+
+    /// Route everything through this proxy
+    #[arg(long, value_name = "URL")]
+    pub proxy: Option<String>,
+
+    /// Socket timeout in seconds
+    #[arg(long, value_name = "SECONDS", default_value_t = 30.0)]
+    pub socket_timeout: f64,
+
+    /// Download straight to the final file, without a .part file
+    #[arg(long)]
+    pub no_part: bool,
+
+    /// Stop the whole run when a file already exists
+    #[arg(long)]
+    pub break_on_existing: bool,
+
+    /// List the available subtitles and exit
+    #[arg(long)]
+    pub list_subs: bool,
+
+    /// Write the video description to a file
+    #[arg(long)]
+    pub write_description: bool,
+
+    /// Write the comments to a file
+    #[arg(long)]
+    pub write_comments: bool,
+
+    /// Cut the file name to this many characters
+    #[arg(long, value_name = "N")]
+    pub trim_filenames: Option<usize>,
+
+    /// Keep only ASCII characters in the file name
+    #[arg(long)]
+    pub restrict_filenames: bool,
+
+    /// Replace the characters Windows does not allow
+    #[arg(long)]
+    pub windows_filenames: bool,
+
+    /// Write the --print output to a file: --print-to-file TEMPLATE FILE
+    #[arg(long, num_args = 2, value_names = ["TEMPLATE", "FILE"])]
+    pub print_to_file: Vec<String>,
+
+    /// Only videos uploaded after this date (YYYYMMDD or today-2weeks)
+    #[arg(long, value_name = "DATE")]
+    pub dateafter: Option<String>,
+
+    /// Only videos uploaded before this date
+    #[arg(long, value_name = "DATE")]
+    pub datebefore: Option<String>,
+
+    /// Read options from this file
+    #[arg(long, value_name = "FILE")]
+    pub config: Option<PathBuf>,
+
+    /// Do not use the session cache
+    #[arg(long)]
+    pub no_cache_dir: bool,
+
     /// Verbose logging
     #[arg(short = 'v', long)]
     pub verbose: bool,

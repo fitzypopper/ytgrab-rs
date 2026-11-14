@@ -3,6 +3,12 @@
 pub mod archive;
 pub mod browser_cookies;
 pub mod cache;
+pub mod comments;
+pub mod config;
+pub mod dates;
+pub mod exec;
+pub mod filenames;
+pub mod playlist;
 pub mod cli;
 pub mod cookies;
 pub mod download;

@@ -5,8 +5,30 @@ use tracing_subscriber::EnvFilter;
 use ytgrab::cli::Cli;
 use ytgrab::runner;
 
+/// Find the `--config` option in the arguments.
+fn find_config(args: &[std::ffi::OsString]) -> Option<std::path::PathBuf> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let text = arg.to_string_lossy();
+        if text == "--config" || text == "-C" {
+            return iter.next().map(std::path::PathBuf::from);
+        }
+        if let Some(value) = text.strip_prefix("--config=") {
+            return Some(std::path::PathBuf::from(value));
+        }
+    }
+    None
+}
+
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    // A config file is applied first, so the command line wins.
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let config = find_config(&args);
+    let args = match &config {
+        Some(path) => ytgrab::config::splice(args[0].clone(), args[1..].to_vec(), path),
+        None => args,
+    };
+    let cli = Cli::parse_from(args);
 
     let level = if cli.verbose {
         "debug"

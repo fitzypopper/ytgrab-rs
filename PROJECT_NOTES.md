@@ -267,6 +267,30 @@ connections on purpose.
 * **Size verification.** A download that stops early is now reported
   instead of being muxed into a broken file.
 
+## The yt-dlp parity batch
+
+* `--exec` and `--exec-before-download` — run a shell command per video, with
+  the fields substituted and the file name appended.
+* Playlist selection: `--playlist-start`, `--playlist-end`,
+  `--playlist-items` (indices, ranges, negative counts from the end),
+  `--playlist-reverse`, `--playlist-random` and `--max-downloads`.
+  `--max-downloads` counts the videos that are *processed*, not only the ones
+  that are downloaded.
+* `--proxy`, `--socket-timeout`, `--no-part`, `--break-on-existing`.
+* `--list-subs`, `--write-description`, `--write-comments`.
+* `--trim-filenames`, `--restrict-filenames`, `--windows-filenames`.
+* `--print-to-file TEMPLATE FILE`.
+* `--dateafter` and `--datebefore`, with yt-dlp's date syntax
+  (`YYYYMMDD`, `today`, `now-2weeks`). The upload date comes from the watch
+  page, so the page is only fetched when a date filter is used.
+* `--config FILE` — options from a file. The command line wins, because the
+  file's options are applied first.
+
+`--write-comments` is best effort: YouTube keeps changing the shape of the
+comment payload, so the fetcher walks the response tree and picks out the
+objects that look like comments. When the server does not hand out the
+comments at all, that is reported instead of an empty file being written.
+
 ## Features that came after the first release
 
 * `--download-archive` — plain text file of already downloaded videos, same

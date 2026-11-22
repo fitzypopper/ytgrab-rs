@@ -1,6 +1,6 @@
 [package]
 name = "ytgrab"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "A fast YouTube downloader written in Rust. Speaks the InnerTube API directly: no browser, no HTML scraping, no JS engine."
 license = "MIT"
